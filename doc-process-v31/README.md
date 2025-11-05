@@ -2,9 +2,9 @@
 
 ## Overview
 
-Complete 6-phase pipeline for legal document processing with parallel execution, OCR enhancement, and AI-powered text formatting.
+Complete 7-phase pipeline for legal document processing with parallel execution, OCR enhancement, AI-powered text formatting, and cloud storage integration.
 
-**Pipeline**: Directory → Rename → Clean → Convert → Format → Verify
+**Pipeline**: Directory → Rename → Clean → Convert → Format → Verify → GCS Upload
 
 ## What's New in v31
 
@@ -15,6 +15,7 @@ Complete 6-phase pipeline for legal document processing with parallel execution,
 - Phase 4: **Convert** (was "Extract") - `_c.txt` suffix
 - Phase 5: **Format** - `_v31.txt` suffix
 - Phase 6: **Verify** - report only
+- Phase 7: **GCS Upload** - uploads PDFs to cloud storage and inserts URLs
 
 ### Optimized Clean/OCR Phase (Phase 3)
 1. **Remove metadata** first (PyMuPDF)
@@ -69,6 +70,9 @@ python doc-process-v31.py --dir "E:\path\to\project" --phase format
 
 # Phase 6: Verify (compare results)
 python doc-process-v31.py --dir "E:\path\to\project" --phase verify
+
+# Phase 7: GCS Upload (upload PDFs and insert URLs)
+python doc-process-v31.py --dir "E:\path\to\project" --phase gcs_upload
 ```
 
 ## File Suffix Flow
@@ -144,6 +148,16 @@ filename.pdf
 - **Input**: `04_doc-convert/*_c.txt` + `05_doc-format/*_v31.txt`
 - **Output**: Console diff report
 - **Action**: Compare convert vs format, validate completeness
+
+### Phase 7: GCS Upload
+- **Input**: `03_doc-clean/*_o.pdf` + `04_doc-convert/*_c.txt`
+- **Output**: GCS bucket + updated text files
+- **Tools**: Google Cloud Storage
+- **Action**: 
+  1. Upload all cleaned PDFs to `gs://fremont-1/docs/<project>/`
+  2. Generate public URLs for each PDF
+  3. Insert URL header into corresponding `_c.txt` files
+- **URL Format**: `https://storage.cloud.google.com/fremont-1/docs/<project>/<filename>`
 
 ## Performance Comparison
 

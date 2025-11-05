@@ -205,8 +205,8 @@ def ensure_directory_structure(root_dir):
         "01_doc-original",
         "02_doc-renamed", 
         "03_doc-clean",
-        "04_doc-txt-1",
-        "05_doc-txt-2",
+        "04_doc-convert",
+        "05_doc-format",
         "y_logs",
         "z_old",
         "_failed"
@@ -217,7 +217,7 @@ def ensure_directory_structure(root_dir):
         dir_path.mkdir(exist_ok=True)
     
     # Create _old and _log subdirectories in pipeline directories (01-05)
-    pipeline_dirs = ["01_doc-original", "02_doc-renamed", "03_doc-clean", "04_doc-txt-1", "05_doc-txt-2"]
+    pipeline_dirs = ["01_doc-original", "02_doc-renamed", "03_doc-clean", "04_doc-convert", "05_doc-format"]
     for pipeline_dir in pipeline_dirs:
         (root_dir / pipeline_dir / "_old").mkdir(exist_ok=True)
         (root_dir / pipeline_dir / "_log").mkdir(exist_ok=True)
@@ -274,9 +274,6 @@ def phase1_directory(root_dir):
     report_data['directory']['moved'] = moved_count
     report_data['directory']['total'] = len(pdf_files)
     print(f"\n[OK] Directoryd {moved_count} PDF files")
-    
-    # Sync to GCS
-    sync_all_directories_to_gcs(root_dir)
     
     # ALWAYS run duplicate detection as standalone subprocess
     # COMMENTED OUT - Too slow for now
@@ -708,9 +705,6 @@ def phase3_clean(root_dir):
     if skipped_count > 0:
         print(f"[INFO] Skipped {skipped_count} already processed files")
     print(f"[OK] Successfully processed: {success_count}/{len(pdf_files)} files")
-    
-    # Sync OCR directory to GCS and make files public
-    sync_all_directories_to_gcs(root_dir)
 
 # === GCS HELPER FUNCTIONS ===
 def sync_directory_to_gcs(local_dir, gcs_prefix, make_public=False, mirror=False):
@@ -836,9 +830,9 @@ def phase4_convert(root_dir):
     ensure_directory_structure(root_dir)
     
     clean_dir = root_dir / "03_doc-clean"
-    txt_dir = root_dir / "04_doc-txt-1"
+    txt_dir = root_dir / "04_doc-convert"
     
-    pdf_files = [f for f in clean_dir.glob("*_d.pdf") if not f.parent.name.startswith('_')]
+    pdf_files = [f for f in clean_dir.glob("*_o.pdf") if not f.parent.name.startswith('_')]
     
     if not pdf_files:
         print("[SKIP] No PDF files found in 03_doc-clean")
@@ -853,7 +847,8 @@ def phase4_convert(root_dir):
     
     skipped_count = 0
     for pdf in pdf_files:
-        output_path = txt_dir / f"{pdf.stem}.txt"
+        base_name = pdf.stem[:-2]  # Remove _o suffix
+        output_path = txt_dir / f"{base_name}_c.txt"
         
         # Skip if output already exists
         if output_path.exists():
@@ -1041,8 +1036,8 @@ def phase5_format(root_dir):
     # Ensure directory structure exists
     ensure_directory_structure(root_dir)
     
-    txt_dir = root_dir / "04_doc-txt-1"
-    formatted_dir = root_dir / "05_doc-txt-2"
+    txt_dir = root_dir / "04_doc-convert"
+    formatted_dir = root_dir / "05_doc-format"
     
     # Archive old files
     old_dir = formatted_dir / "_old"
@@ -1056,10 +1051,10 @@ def phase5_format(root_dir):
                 shutil.move(str(old_file), str(old_dir / archive_name))
             print(f"[OK] Archived {len(existing_files)} old files to _old/")
     
-    txt_files = [f for f in txt_dir.glob("*_o.txt") if not f.parent.name.startswith('_')]
+    txt_files = [f for f in txt_dir.glob("*_c.txt") if not f.parent.name.startswith('_')]
     
     if not txt_files:
-        print("[SKIP] No text files found in 04_doc-txt-1")
+        print("[SKIP] No text files found in 04_doc-convert")
         return
     
     genai.configure(api_key=GEMINI_API_KEY)
@@ -1152,7 +1147,7 @@ def phase6_verify(root_dir):
     ensure_directory_structure(root_dir)
     
     clean_dir = root_dir / "03_doc-clean"
-    formatted_dir = root_dir / "05_doc-txt-2"
+    formatted_dir = root_dir / "05_doc-format"
     
     txt_files = list(formatted_dir.glob("*_v31.txt"))
     
@@ -1319,6 +1314,101 @@ def phase6_verify(root_dir):
     print(f"\n[OK] Final report saved: {report_path.name}")
     report_data['verify'] = verification_results
 
+# === PHASE 7: GCS UPLOAD ===
+def phase7_gcs_upload(root_dir):
+    """Upload cleaned PDFs to GCS and insert URLs into converted text files.
+    
+    This phase:
+    1. Uploads all *_o.pdf files from 03_doc-clean to GCS
+    2. Generates public URLs for each uploaded PDF
+    3. Prepends the GCS URL to the corresponding *_c.txt file in 04_doc-convert
+    """
+    print("\n" + "="*80)
+    print("PHASE 7: GCS UPLOAD & URL INSERTION")
+    print("="*80)
+    
+    clean_dir = root_dir / '03_doc-clean'
+    convert_dir = root_dir / '04_doc-convert'
+    
+    if not clean_dir.exists():
+        print(f"[SKIP] Clean directory not found: {clean_dir}")
+        return
+    
+    if not convert_dir.exists():
+        print(f"[SKIP] Convert directory not found: {convert_dir}")
+        return
+    
+    # Get project name from root directory
+    project_name = root_dir.name
+    gcs_prefix = f"docs/{project_name}"
+    
+    pdf_files = sorted(clean_dir.glob('*_o.pdf'))
+    if not pdf_files:
+        print(f"[SKIP] No cleaned PDFs found in {clean_dir}")
+        return
+    
+    print(f"[INFO] Found {len(pdf_files)} PDFs to upload")
+    print(f"[INFO] GCS destination: gs://{GCS_BUCKET}/{gcs_prefix}/")
+    
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET)
+        
+        uploaded_count = 0
+        url_inserted_count = 0
+        
+        for pdf_path in pdf_files:
+            try:
+                # Generate URL without re-uploading (files already uploaded)
+                blob_name = f"{gcs_prefix}/{pdf_path.name}"
+                blob = bucket.blob(blob_name)
+                
+                # Check if blob exists
+                if blob.exists():
+                    print(f"\n[EXISTS] {pdf_path.name} already in GCS")
+                    gcs_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_name}"
+                    uploaded_count += 1
+                else:
+                    # Upload new file
+                    print(f"\n[UPLOAD] {pdf_path.name} → gs://{GCS_BUCKET}/{blob_name}")
+                    blob.upload_from_filename(str(pdf_path))
+                    blob.make_public()
+                    gcs_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_name}"
+                    uploaded_count += 1
+                    print(f"[OK] Uploaded: {gcs_url}")
+                
+                # Find corresponding _c.txt file
+                base_name = pdf_path.stem.replace('_o', '')
+                txt_file = convert_dir / f"{base_name}_c.txt"
+                
+                if txt_file.exists():
+                    # Read current content
+                    with open(txt_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Prepend URL header
+                    updated_content = f"PDF URL: {gcs_url}\n\n{content}"
+                    
+                    # Write back
+                    with open(txt_file, 'w', encoding='utf-8') as f:
+                        f.write(updated_content)
+                    
+                    url_inserted_count += 1
+                    print(f"[OK] URL inserted into: {txt_file.name}")
+                else:
+                    print(f"[WARN] No matching text file found: {txt_file.name}")
+                
+            except Exception as e:
+                print(f"[FAIL] Error processing {pdf_path.name}: {e}")
+                continue
+        
+        print(f"\n[SUMMARY] Uploaded {uploaded_count} PDFs to GCS")
+        print(f"[SUMMARY] Inserted URLs into {url_inserted_count} text files")
+        
+    except Exception as e:
+        print(f"[ERROR] GCS upload failed: {e}")
+        raise DocumentProcessingError(f"Phase 7 GCS upload failed: {e}")
+
 # === INTERACTIVE MENU ===
 def interactive_menu():
     """Interactive menu for user to select phases and verification mode"""
@@ -1328,7 +1418,7 @@ def interactive_menu():
     
     # Question 1: Full or Individual phases
     print("1. Do you want to run FULL pipeline or INDIVIDUAL phases?")
-    print("   [1] Full pipeline (all 6 phases)")
+    print("   [1] Full pipeline (all 7 phases)")
     print("   [2] Individual phases (select which ones to run)")
     
     while True:
@@ -1338,26 +1428,27 @@ def interactive_menu():
         print("Invalid choice. Please enter 1 or 2.")
     
     if choice == '1':
-        phases = ['directory', 'rename', 'clean', 'convert', 'format', 'verify']
+        phases = ['directory', 'rename', 'clean', 'convert', 'format', 'verify', 'gcs_upload']
     else:
         print("\n2. Select which phases to run (enter phase numbers separated by spaces):")
         print("   [1] Directory    - Move PDFs to 01_doc-original")
         print("   [2] Rename      - Add date prefix, clean filenames")
-        print("   [3] OCR         - PDF enhancement (600 DPI, PDF/A)")
+        print("   [3] Clean       - PDF enhancement (600 DPI, PDF/A)")
         print("   [4] Convert     - Text convertion with Google Vision")
         print("   [5] Format      - AI-powered text formatting")
         print("   [6] Verify      - Accuracy verification")
+        print("   [7] GCS Upload  - Upload to cloud storage & insert URLs")
         
         while True:
             phase_input = input("\nEnter phase numbers (e.g., '1 2 3' or '2 3'): ").strip()
             phase_nums = phase_input.split()
-            if all(p in ['1', '2', '3', '4', '5', '6'] for p in phase_nums):
+            if all(p in ['1', '2', '3', '4', '5', '6', '7'] for p in phase_nums):
                 break
-            print("Invalid input. Please enter numbers 1-6 separated by spaces.")
+            print("Invalid input. Please enter numbers 1-7 separated by spaces.")
         
         phase_map = {
             '1': 'directory', '2': 'rename', '3': 'clean',
-            '4': 'convert', '5': 'format', '6': 'verify'
+            '4': 'convert', '5': 'format', '6': 'verify', '7': 'gcs_upload'
         }
         phases = [phase_map[p] for p in phase_nums]
     
@@ -1385,12 +1476,13 @@ def interactive_menu():
 def confirm_phase(phase_name):
     """Ask user to confirm running a phase"""
     phase_descriptions = {
-        'directory': 'Move PDFs to 01_doc-original with _o suffix',
-        'rename': 'Add date prefix and clean filenames',
-        'clean': 'PDF enhancement (600 DPI, PDF/A)',
-        'convert': 'Text convertion with Google Vision API',
-        'format': 'AI-powered text formatting with Gemini',
-        'verify': 'Accuracy verification and reporting'
+        'directory': 'Move PDFs to 01_doc-original with _d suffix',
+        'rename': 'Add date prefix and clean filenames with _r suffix',
+        'clean': 'PDF enhancement (600 DPI, PDF/A) with _o suffix',
+        'convert': 'Text convertion with Google Vision API with _c suffix',
+        'format': 'AI-powered text formatting with Gemini with _v31 suffix',
+        'verify': 'Accuracy verification and reporting',
+        'gcs_upload': 'Upload PDFs to GCS and insert URLs into text files'
     }
     
     print("\n" + "-"*80)
@@ -1408,9 +1500,9 @@ def confirm_phase(phase_name):
 
 # === MAIN PIPELINE ===
 def main():
-    parser = argparse.ArgumentParser(description='Document Processing Pipeline v30')
+    parser = argparse.ArgumentParser(description='Document Processing Pipeline v31')
     parser.add_argument('--dir', type=str, help='Target directory to process')
-    parser.add_argument('--phase', nargs='+', choices=['directory', 'rename', 'clean', 'convert', 'format', 'verify', 'all'],
+    parser.add_argument('--phase', nargs='+', choices=['directory', 'rename', 'clean', 'convert', 'format', 'verify', 'gcs_upload', 'all'],
                        default=None, help='Phases to run (omit for interactive mode)')
     parser.add_argument('--no-verify', action='store_true', help='Skip phase verification prompts')
     
@@ -1418,7 +1510,7 @@ def main():
     
     if not args.dir:
         print("Error: --dir parameter required")
-        print("Usage: python doc-process-v30.py --dir /path/to/directory [--phase directory rename clean convert format verify]")
+        print("Usage: python doc-process-v31.py --dir /path/to/directory [--phase directory rename clean convert format verify gcs_upload]")
         sys.exit(1)
     
     root_dir = Path(args.dir)
@@ -1435,11 +1527,11 @@ def main():
         # Command-line mode
         phases = args.phase
         if 'all' in phases:
-            phases = ['directory', 'rename', 'clean', 'convert', 'format', 'verify']
+            phases = ['directory', 'rename', 'clean', 'convert', 'format', 'verify', 'gcs_upload']
         verify_before_phase = not args.no_verify
     
-    # Run preflight checks (skip OCR tools for convert/format/verify phases)
-    skip_clean_check = all(p in ['convert', 'format', 'verify'] for p in phases)
+    # Run preflight checks (skip OCR tools for convert/format/verify/gcs_upload phases)
+    skip_clean_check = all(p in ['convert', 'format', 'verify', 'gcs_upload'] for p in phases)
     if not preflight_checks(skip_clean_check=skip_clean_check):
         sys.exit(1)
     
@@ -1450,7 +1542,8 @@ def main():
         'clean': phase3_clean,
         'convert': phase4_convert,
         'format': phase5_format,
-        'verify': phase6_verify
+        'verify': phase6_verify,
+        'gcs_upload': phase7_gcs_upload
     }
     
     for phase_name in phases:
