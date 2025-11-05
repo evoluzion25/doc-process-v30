@@ -918,71 +918,107 @@ def phase4_convert(root_dir):
             with open(pdf, 'rb') as f:
                 content = f.read()
             
+            # Check file size - Google Vision API has 40MB limit for inline requests
+            file_size_mb = len(content) / (1024 * 1024)
+            use_pymupdf_fallback = file_size_mb > 35  # Use PyMuPDF for files >35MB
+            
             # Process in batches of 5 pages (API limit)
             text_pages = []
             page_num = 1
             batch_size = 5
             
-            # Prefer latest OCR model with English hint; fall back if needed
-            clean_feature_primary = None
-            try:
-                # Newer SDKs support model selection
-                clean_feature_primary = vision.Feature(
-                    type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION,
-                    model="builtin/latest"
-                )
-            except Exception:
-                clean_feature_primary = vision.Feature(
-                    type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION
-                )
-
-            image_ctx = None
-            try:
-                image_ctx = vision.ImageContext(language_hints=['en'])
-            except Exception:
-                image_ctx = None
-
-            while True:
-                # Create request for next 5 pages
-                request = vision.AnnotateFileRequest(
-                    input_config=vision.InputConfig(
-                        content=content,
-                        mime_type='application/pdf'
-                    ),
-                    features=[clean_feature_primary],
-                    pages=list(range(page_num, page_num + batch_size)),
-                    image_context=image_ctx
-                )
+            if use_pymupdf_fallback:
+                print(f"  [INFO] File size {file_size_mb:.1f}MB - using PyMuPDF extraction (Google Vision payload limit)")
                 
-                # Process batch
+                # Use PyMuPDF to extract text from large PDFs
                 try:
-                    response = client.batch_annotate_files(requests=[request])
+                    import fitz  # PyMuPDF
+                    doc = fitz.open(pdf)
                     
-                    # Convert text from this batch
-                    batch_pages = []
-                    for file_response in response.responses:
-                        for page_response in file_response.responses:
-                            if page_response.full_text_annotation.text:
-                                batch_pages.append(page_response.full_text_annotation.text)
+                    for page_idx in range(len(doc)):
+                        page = doc.load_page(page_idx)
+                        page_text = page.get_text()
+                        if page_text.strip():
+                            text_pages.append(page_text)
+                        if (page_idx + 1) % 10 == 0:
+                            print(f"  Processed {len(text_pages)} pages...")
                     
-                    if not batch_pages:
-                        # No more pages
-                        break
-                        
-                    text_pages.extend(batch_pages)
-                    page_num += batch_size
+                    doc.close()
                     print(f"  Processed {len(text_pages)} pages...")
                     
                 except Exception as e:
-                    if "400" in str(e):
-                        # Reached end of document
-                        break
-                    raise
+                    print(f"  [WARN] PyMuPDF extraction failed: {e}")
+                    # Continue to Google Vision fallback below
+                    
+            else:
+                # Standard processing for smaller files
+                image_ctx = None
+                try:
+                    image_ctx = vision.ImageContext(language_hints=['en'])
+                except Exception:
+                    image_ctx = None
+                    
+                # Prefer latest OCR model with English hint; fall back if needed
+                clean_feature_primary = None
+                try:
+                    clean_feature_primary = vision.Feature(
+                        type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION,
+                        model="builtin/latest"
+                    )
+                except Exception:
+                    clean_feature_primary = vision.Feature(
+                        type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION
+                    )
+
+                while True:
+                    # Create request for next 5 pages
+                    request = vision.AnnotateFileRequest(
+                        input_config=vision.InputConfig(
+                            content=content,
+                            mime_type='application/pdf'
+                        ),
+                        features=[clean_feature_primary],
+                        pages=list(range(page_num, page_num + batch_size)),
+                        image_context=image_ctx
+                    )
+                    
+                    # Process batch
+                    try:
+                        response = client.batch_annotate_files(requests=[request])
+                        
+                        # Convert text from this batch
+                        batch_pages = []
+                        for file_response in response.responses:
+                            for page_response in file_response.responses:
+                                if page_response.full_text_annotation.text:
+                                    batch_pages.append(page_response.full_text_annotation.text)
+                        
+                        if not batch_pages:
+                            # No more pages
+                            break
+                            
+                        text_pages.extend(batch_pages)
+                        page_num += batch_size
+                        print(f"  Processed {len(text_pages)} pages...")
+                        
+                    except Exception as e:
+                        if "400" in str(e):
+                            # Reached end of document
+                            break
+                        raise
             
             # Fallback: if nothing converted, try simpler TEXT_DETECTION once
             if len(text_pages) == 0:
                 try:
+                    # Initialize context for fallback
+                    fallback_ctx = None
+                    try:
+                        fallback_ctx = vision.ImageContext(language_hints=['en'])
+                    except Exception:
+                        fallback_ctx = None
+                    
                     page_num = 1
+                    fallback_batch_size = 5  # Use smaller batches for fallback
                     while True:
                         clean_feature_fallback = None
                         try:
@@ -1001,8 +1037,8 @@ def phase4_convert(root_dir):
                                 mime_type='application/pdf'
                             ),
                             features=[clean_feature_fallback],
-                            pages=list(range(page_num, page_num + batch_size)),
-                            image_context=image_ctx
+                            pages=list(range(page_num, page_num + fallback_batch_size)),
+                            image_context=fallback_ctx
                         )
                         response_fb = client.batch_annotate_files(requests=[request_fb])
                         batch_pages_fb = []
@@ -1013,7 +1049,7 @@ def phase4_convert(root_dir):
                         if not batch_pages_fb:
                             break
                         text_pages.extend(batch_pages_fb)
-                        page_num += batch_size
+                        page_num += fallback_batch_size
                         print(f"  [FB] Processed {len(text_pages)} pages...")
                 except Exception as e_fb:
                     print(f"  [WARN] Fallback TEXT_DETECTION failed: {e_fb}")
