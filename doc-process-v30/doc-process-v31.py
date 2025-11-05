@@ -1044,23 +1044,31 @@ def phase5_format(root_dir):
     txt_dir = root_dir / "04_doc-txt-1"
     formatted_dir = root_dir / "05_doc-txt-2"
     
-    # Archive old files
-    old_dir = formatted_dir / "_old"
-    if formatted_dir.exists():
-        existing_files = list(formatted_dir.glob("*_v31.txt"))
-        if existing_files:
-            old_dir.mkdir(exist_ok=True)
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            for old_file in existing_files:
-                archive_name = f"{old_file.stem}_{timestamp}.txt"
-                shutil.move(str(old_file), str(old_dir / archive_name))
-            print(f"[OK] Archived {len(existing_files)} old files to _old/")
-    
     txt_files = [f for f in txt_dir.glob("*_o.txt") if not f.parent.name.startswith('_')]
     
     if not txt_files:
         print("[SKIP] No text files found in 04_doc-txt-1")
         return
+    
+    # Check which files need processing FIRST
+    files_to_process = []
+    skipped_count = 0
+    
+    for txt_file in txt_files:
+        base_name = txt_file.stem[:-2]  # Remove _o
+        output_path = formatted_dir / f"{base_name}_v31.txt"
+        
+        if output_path.exists():
+            print(f"[SKIP] Already formatted: {txt_file.name}")
+            skipped_count += 1
+        else:
+            files_to_process.append(txt_file)
+    
+    if not files_to_process:
+        print("[SKIP] All files already formatted")
+        return
+    
+    print(f"[INFO] Processing {len(files_to_process)} new files...")
     
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(MODEL_NAME)
@@ -1068,9 +1076,7 @@ def phase5_format(root_dir):
     # v22 exact prompt - DO NOT MODIFY
     prompt = "You are correcting OCR output for a legal document. Your task is to fix OCR errors, preserve legal terminology, format page markers as [BEGIN PDF Page N], and ensure the document is court-ready with lines under 65 characters and proper paragraph breaks. Return only the corrected text."
 
-    skipped_count = 0
-
-    for txt_file in txt_files:
+    for txt_file in files_to_process:
         base_name = txt_file.stem[:-2]  # Remove _o
         output_path = formatted_dir / f"{base_name}_v31.txt"
         
@@ -1138,9 +1144,7 @@ def phase5_format(root_dir):
             report_data['format'].append({'file': txt_file.name, 'status': 'FAILED', 'error': str(e)})
     
     success_count = len([r for r in report_data['format'] if r.get('status') == 'OK'])
-    print(f"\n[OK] Formatted {success_count}/{len(txt_files)} files")
-    if skipped_count > 0:
-        print(f"[INFO] Skipped {skipped_count} already formatted files")
+    print(f"\n[OK] Formatted {success_count}/{len(files_to_process)} new files")
 
 # === PHASE 6: VERIFY - Deep comparison ===
 def phase6_verify(root_dir):

@@ -8,6 +8,27 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## What's New in v31
 
+### Phase 5 v21 Architecture (November 2025)
+- **Architectural Change**: Phase 5 now matches v21's proven approach
+  - Phase 4 creates complete template (header + body + footer)
+  - Phase 5 extracts only document body for AI processing
+  - Gemini processes raw text without seeing template structure
+  - Reassembles cleaned body with original header/footer
+- **Result**: Perfect formatting preservation with `\n\n[BEGIN PDF Page N]\n\n` (two blank lines)
+- **Parallel Processing**: 5 concurrent workers via ThreadPoolExecutor
+- **Model**: gemini-2.5-pro (Tier 3) with 65536 max tokens, temperature=0.1
+
+### PyMuPDF Fallback for Large Files (November 2025)
+- **Automatic fallback** for PDFs >35MB (overcomes Google Vision API 40MB payload limit)
+- **Seamless switching**: Uses PyMuPDF's `fitz.open().get_text()` when needed
+- Successfully tested on 40MB+ files with 50+ pages
+- Same template structure as Google Vision output
+
+### File Size Optimizations (November 2025)
+- **Phase 3 threshold**: Files ≥5MB processed sequentially (prevents subprocess deadlocks)
+- **Phase 4 threshold**: Files >35MB use PyMuPDF instead of Google Vision
+- Configurable thresholds for different hardware/network conditions
+
 ### Updated Phase Names & Suffixes
 - Phase 1: **Directory** (was "Organize") - `_d` suffix
 - Phase 2: **Rename** - `_r` suffix
@@ -137,15 +158,51 @@ filename.pdf
 - **Input**: `03_doc-clean/*_o.pdf`
 - **Output**: `04_doc-convert/`
 - **Suffix**: `_c.txt`
-- **Tools**: Google Cloud Vision API (batch OCR)
-- **Action**: Extract text in 5-page batches
+- **Tools**: Google Cloud Vision API (batch OCR), PyMuPDF (fallback for files >35MB)
+- **Parallel Processing**: 5 concurrent workers
+- **Action**: 
+  1. Extract text in 5-page batches via Google Vision API
+  2. Automatic PyMuPDF fallback for files >35MB (overcomes Google Vision 40MB payload limit)
+  3. Add structured template with document information header and page markers
+  4. Generate public GCS URL (to be populated in Phase 7)
+
+**Template Structure**:
+```
+§§ DOCUMENT INFORMATION §§
+PDF Location: <GCS URL placeholder>
+PDF Filename: <filename>
+Page Count: <N>
+
+=====================================================================
+BEGINNING OF PROCESSED DOCUMENT
+=====================================================================
+
+[BEGIN PDF Page 1]
+<page 1 content>
+[END PDF Page 1]
+
+[BEGIN PDF Page 2]
+<page 2 content>
+[END PDF Page 2]
+
+=====================================================================
+END OF PROCESSED DOCUMENT
+=====================================================================
+```
 
 ### Phase 5: Format
 - **Input**: `04_doc-convert/*_c.txt`
 - **Output**: `05_doc-format/`
 - **Suffix**: `_v31.txt`
-- **Tools**: Gemini 2.5 Pro (text cleaning)
-- **Action**: Remove headers/footers, fix formatting, preserve legal structure
+- **Tools**: Gemini 2.5 Pro (gemini-2.5-pro, Tier 3, 65536 max tokens, temperature=0.1)
+- **Parallel Processing**: 5 concurrent workers via ThreadPoolExecutor
+- **Architecture**: Matches v21 approach for optimal formatting preservation
+  1. **Extract** header, body, and footer from `_c.txt` template
+  2. **Process** only document body through Gemini (no template sent to AI)
+  3. **Reassemble** cleaned body with original header/footer
+- **Action**: Fix OCR errors, remove scanning artifacts, preserve legal structure and page markers
+- **Critical Format**: Maintains `\n\n[BEGIN PDF Page N]\n\n` (two blank lines) around all page markers
+- **Prompt**: Uses exact v21 prompt for OCR correction without formatting preservation instructions
 
 ### Phase 6: Verify
 - **Input**: `04_doc-convert/*_c.txt` + `05_doc-format/*_v31.txt`

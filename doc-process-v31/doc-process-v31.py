@@ -98,30 +98,11 @@ report_data = {
     'clean': [], 'convert': [], 'format': [], 'verify': []
 }
 
-# === DEAD-LETTER QUEUE ===
-def move_to_quarantine(root_dir: Path, file_path: Path, error: Exception, phase_name: str):
-    """Move failed files to _failed/<phase>/ for manual review"""
-    try:
-        quarantine_dir = root_dir / "_failed" / phase_name
-        quarantine_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Move file to quarantine
-        target_path = quarantine_dir / file_path.name
-        if file_path.exists():
-            shutil.copy2(str(file_path), str(target_path))  # Copy instead of move
-        
-        # Create error log
-        error_log_path = quarantine_dir / f"{file_path.stem}_error.txt"
-        with open(error_log_path, 'w', encoding='utf-8') as f:
-            f.write(f"File: {file_path.name}\n")
-            f.write(f"Phase: {phase_name}\n")
-            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-            f.write(f"Error Type: {type(error).__name__}\n")
-            f.write(f"Error Message: {str(error)}\n")
-        
-        print(f"  [QUARANTINE] Copied {file_path.name} to _failed/{phase_name}/")
-    except Exception as e:
-        print(f"  [WARN] Could not quarantine {file_path.name}: {e}")
+# === DEAD-LETTER QUEUE (DISABLED) ===
+# def move_to_quarantine(root_dir: Path, file_path: Path, error: Exception, phase_name: str):
+#     """Move failed files to _failed/<phase>/ for manual review"""
+#     # Disabled - no longer creating _failed directories
+#     pass
 
 # === PHASE 0: PRE-FLIGHT CHECKS ===
 def preflight_checks(skip_clean_check=False):
@@ -209,8 +190,7 @@ def ensure_directory_structure(root_dir):
         "04_doc-convert",
         "05_doc-format",
         "y_logs",
-        "z_old",
-        "_failed"
+        "z_old"
     ]
     
     for dir_name in directories:
@@ -1118,10 +1098,79 @@ END OF PROCESSED DOCUMENT
     if skipped_count > 0:
         print(f"[INFO] Skipped {skipped_count} already converted files")
 
+def _process_format_file(txt_file, formatted_dir, prompt):
+    """Worker function for parallel text formatting - matches v21 architecture"""
+    base_name = txt_file.stem[:-2]  # Remove _c suffix
+    output_path = formatted_dir / f"{base_name}_v31.txt"
+    
+    try:
+        # Initialize model for this worker
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(MODEL_NAME)
+        
+        # Read input text (has template from Phase 4)
+        with open(txt_file, 'r', encoding='utf-8') as f:
+            full_text = f.read()
+        
+        # CRITICAL: Extract header, body, footer separately (like v21 does)
+        # Gemini should ONLY see the document body, not the template
+        body_start = full_text.find("BEGINNING OF PROCESSED DOCUMENT")
+        footer_start = full_text.find("=====================================================================\nEND OF PROCESSED DOCUMENT")
+        
+        if body_start < 0 or footer_start < 0:
+            raise ValueError("Template markers not found - file may not be from Phase 4")
+        
+        # Skip past the BEGINNING marker and separator line to get to content
+        body_start_line = full_text.find("\n", body_start + len("BEGINNING OF PROCESSED DOCUMENT"))
+        body_start_line = full_text.find("\n", body_start_line + 1)  # Skip the === line
+        body_start_content = body_start_line + 1
+        
+        # Extract the three parts
+        header = full_text[:body_start_content]
+        raw_body = full_text[body_start_content:footer_start].strip()
+        footer = full_text[footer_start:]  # Includes the === line before END
+        
+        # Send ONLY the body to Gemini (like v21)
+        response = model.generate_content(
+            prompt + "\n\n" + raw_body,
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=MAX_OUTPUT_TOKENS
+            )
+        )
+        
+        # Reassemble: header + cleaned_body + footer (like v21)
+        # CRITICAL: Ensure blank lines between sections
+        cleaned_body = response.text.strip()
+        
+        # Header already ends with blank lines from Phase 4, but ensure it
+        if not header.endswith("\n\n"):
+            header = header.rstrip() + "\n\n"
+        
+        # Footer should have blank lines before it
+        final_text = header + cleaned_body + "\n\n" + footer
+        
+        # Save formatted text
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(final_text)
+        
+        return ProcessingResult(
+            file_name=output_path.name,
+            status='OK',
+            metadata={'chars_in': len(raw_body), 'chars_out': len(cleaned_body)}
+        )
+        
+    except Exception as e:
+        return ProcessingResult(
+            file_name=txt_file.name,
+            status='FAILED',
+            error=str(e)
+        )
+
 # === PHASE 5: FORMAT - AI Text Cleaning ===
 def phase5_format(root_dir):
-    """Clean and format text files using Gemini (exact v22 prompt)"""
-    print("\nPHASE 5: FORMAT - AI TEXT OCRING")
+    """Clean and format text files using Gemini (exact v21 prompt)"""
+    print("\nPHASE 5: FORMAT - AI TEXT CLEANING")
     print("-" * 80)
     
     # Ensure directory structure exists
@@ -1130,98 +1179,62 @@ def phase5_format(root_dir):
     txt_dir = root_dir / "04_doc-convert"
     formatted_dir = root_dir / "05_doc-format"
     
-    # Archive old files
-    old_dir = formatted_dir / "_old"
-    if formatted_dir.exists():
-        existing_files = list(formatted_dir.glob("*_v31.txt"))
-        if existing_files:
-            old_dir.mkdir(exist_ok=True)
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            for old_file in existing_files:
-                archive_name = f"{old_file.stem}_{timestamp}.txt"
-                shutil.move(str(old_file), str(old_dir / archive_name))
-            print(f"[OK] Archived {len(existing_files)} old files to _old/")
-    
     txt_files = [f for f in txt_dir.glob("*_c.txt") if not f.parent.name.startswith('_')]
     
     if not txt_files:
         print("[SKIP] No text files found in 04_doc-convert")
         return
     
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(MODEL_NAME)
-    
-    # v22 exact prompt - DO NOT MODIFY
-    prompt = "You are correcting OCR output for a legal document. Your task is to fix OCR errors, preserve legal terminology, format page markers as [BEGIN PDF Page N], and ensure the document is court-ready with lines under 65 characters and proper paragraph breaks. Return only the corrected text."
-
+    # Check which files need processing FIRST
+    files_to_process = []
     skipped_count = 0
-
+    
     for txt_file in txt_files:
-        base_name = txt_file.stem[:-2]  # Remove _o
+        base_name = txt_file.stem[:-2]  # Remove _c
         output_path = formatted_dir / f"{base_name}_v31.txt"
         
-        # Skip if output already exists
         if output_path.exists():
             print(f"[SKIP] Already formatted: {txt_file.name}")
             skipped_count += 1
-            continue
+        else:
+            files_to_process.append(txt_file)
+    
+    if not files_to_process:
+        print("[SKIP] All files already formatted")
+        return
+    
+    print(f"[INFO] Processing {len(files_to_process)} new files with {MAX_WORKERS_IO} workers...")
+    
+    genai.configure(api_key=GEMINI_API_KEY)
+    
+    # v21 exact prompt - Gemini only sees document body, not template
+    prompt = "You are correcting OCR output for a legal document. Your task is to fix OCR errors, preserve legal terminology, format page markers EXACTLY as '\\n\\n[BEGIN PDF Page N]\\n\\n' with blank lines before and after, and ensure the document is court-ready with lines under 65 characters and proper paragraph breaks. Return only the corrected text."
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS_IO) as executor:
+        futures = {
+            executor.submit(_process_format_file, txt_file, formatted_dir, prompt): txt_file
+            for txt_file in files_to_process
+        }
         
-        print(f"Processing: {txt_file.name} → {output_path.name}")
-        
-        try:
-            # Read input text (already has header/footer from Phase 4)
-            with open(txt_file, 'r', encoding='utf-8') as f:
-                raw_text = f.read()
-            
-            # Convert only the document content (between header and footer)
-            # Keep header and footer intact, only format the middle section
-            if "BEGINNING OF PROCESSED DOCUMENT" in raw_text and "END OF PROCESSED DOCUMENT" in raw_text:
-                # Split into header, content, footer
-                parts = raw_text.split("BEGINNING OF PROCESSED DOCUMENT")
-                header_section = parts[0] + "BEGINNING OF PROCESSED DOCUMENT"
-                
-                remaining = parts[1].split("END OF PROCESSED DOCUMENT")
-                content_section = remaining[0]
-                footer_section = "END OF PROCESSED DOCUMENT" + remaining[1]
-                
-                # Send only content to Gemini with v22 prompt
-                response = model.generate_content(
-                    prompt + "\n\n" + content_section,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.1,
-                        max_output_tokens=MAX_OUTPUT_TOKENS
-                    )
-                )
-                cleaned_content = response.text
-                
-                # Reassemble with original header and footer
-                final_text = header_section + "\n" + cleaned_content + "\n" + footer_section
-            else:
-                # Fallback: format entire document if header/footer not found
-                response = model.generate_content(
-                    prompt + "\n\n" + raw_text,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.1,
-                        max_output_tokens=MAX_OUTPUT_TOKENS
-                    )
-                )
-                final_text = response.text
-            
-            # Save formatted text
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(final_text)
-            
-            print(f"  [OK] Cleaned and formatted")
-            report_data['format'].append({
-                'file': txt_file.name,
-                'chars_in': len(raw_text),
-                'chars_out': len(final_text),
-                'status': 'OK'
-            })
-            
-        except Exception as e:
-            print(f"  [FAIL] Gemini formatting error: {e}")
-            report_data['format'].append({'file': txt_file.name, 'status': 'FAILED', 'error': str(e)})
+        for future in concurrent.futures.as_completed(futures):
+            txt_file = futures[future]
+            try:
+                result = future.result()
+                if result.status == 'OK':
+                    print(f"[OK] {result.file_name}")
+                    metadata = result.metadata if result.metadata else {}
+                    report_data['format'].append({
+                        'file': txt_file.name,
+                        'chars_in': metadata.get('chars_in', 0),
+                        'chars_out': metadata.get('chars_out', 0),
+                        'status': 'OK'
+                    })
+                else:
+                    print(f"[FAIL] {result.file_name}: {result.error}")
+                    report_data['format'].append({'file': txt_file.name, 'status': 'FAILED', 'error': result.error})
+            except Exception as e:
+                print(f"[FAIL] {txt_file.name}: {e}")
+                report_data['format'].append({'file': txt_file.name, 'status': 'FAILED', 'error': str(e)})
     
     success_count = len([r for r in report_data['format'] if r.get('status') == 'OK'])
     print(f"\n[OK] Formatted {success_count}/{len(txt_files)} files")
