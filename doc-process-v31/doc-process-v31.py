@@ -1335,9 +1335,153 @@ def phase5_format(root_dir):
         print(f"[INFO] Skipped {skipped_count} already formatted files")
 
 # === PHASE 6: VERIFY - Deep comparison ===
-def phase6_verify(root_dir):
-    """Compare formatted text to original PDFs and generate verification report"""
-    print("\nPHASE 6: VERIFY - ACCURACY CHECK")
+def phase6_gcs_upload(root_dir):
+    """Upload cleaned PDFs to GCS and insert URLs into text files.
+    
+    This phase:
+    1. Identifies the full directory path relative to workspace
+    2. Uploads all *_o.pdf files from 03_doc-clean to GCS with full path
+    3. Generates public URLs for each uploaded PDF
+    4. Updates headers in 04_doc-convert/*_c.txt files with PDF Directory and PDF Public Link
+    5. Updates headers in 05_doc-format/*_v31.txt files with PDF Directory and PDF Public Link
+    """
+    print("\n" + "="*80)
+    print("PHASE 6: GCS UPLOAD - ONLINE ACCESS")
+    print("="*80)
+    
+    clean_dir = root_dir / '03_doc-clean'
+    convert_dir = root_dir / '04_doc-convert'
+    format_dir = root_dir / '05_doc-format'
+    
+    if not clean_dir.exists():
+        print(f"[SKIP] Clean directory not found: {clean_dir}")
+        return
+    
+    # Get full directory path relative to E:\ drive
+    full_path = str(root_dir).replace('\\', '/')
+    if full_path.startswith('E:/'):
+        full_path = full_path[3:]
+    elif full_path.startswith('e:/'):
+        full_path = full_path[3:]
+    
+    gcs_prefix = f"docs/{full_path}"
+    pdf_directory = full_path
+    
+    pdf_files = sorted(clean_dir.glob('*_o.pdf'))
+    if not pdf_files:
+        print(f"[SKIP] No cleaned PDFs found in {clean_dir}")
+        return
+    
+    print(f"[INFO] Found {len(pdf_files)} PDFs to upload")
+    print(f"[INFO] PDF Directory: {pdf_directory}")
+    print(f"[INFO] GCS destination: gs://{GCS_BUCKET}/{gcs_prefix}/")
+    
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET)
+        
+        uploaded_count = 0
+        convert_updated_count = 0
+        format_updated_count = 0
+        
+        for pdf_path in pdf_files:
+            try:
+                # Upload to GCS with full directory path
+                blob_name = f"{gcs_prefix}/{pdf_path.name}"
+                blob = bucket.blob(blob_name)
+                
+                # Check if blob exists
+                if blob.exists():
+                    print(f"\n[EXISTS] {pdf_path.name} already in GCS")
+                    gcs_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_name}"
+                    uploaded_count += 1
+                else:
+                    # Upload new file
+                    print(f"\n[UPLOAD] {pdf_path.name} → gs://{GCS_BUCKET}/{blob_name}")
+                    blob.upload_from_filename(str(pdf_path))
+                    blob.make_public()
+                    gcs_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_name}"
+                    uploaded_count += 1
+                    print(f"[OK] Uploaded: {gcs_url}")
+                
+                # Find corresponding files (remove only suffix _o, not all occurrences)
+                base_name = pdf_path.stem
+                if base_name.endswith('_o'):
+                    base_name = base_name[:-2]
+                convert_file = convert_dir / f"{base_name}_c.txt" if convert_dir.exists() else None
+                format_file = format_dir / f"{base_name}_v31.txt" if format_dir.exists() else None
+                
+                # Update 04_doc-convert/*_c.txt header
+                if convert_file and convert_file.exists():
+                    with open(convert_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Create header
+                    header = f"PDF Directory: {pdf_directory}\nPDF Public Link: {gcs_url}\n\n"
+                    
+                    # Remove old header if exists
+                    if content.startswith("PDF URL:") or content.startswith("PDF Directory:") or content.startswith("PDF Public Link:"):
+                        lines = content.split('\n')
+                        content_start = 0
+                        for i, line in enumerate(lines):
+                            if not line.startswith("PDF") and line.strip():
+                                content_start = i
+                                break
+                        content = '\n'.join(lines[content_start:])
+                    
+                    # Write updated content
+                    with open(convert_file, 'w', encoding='utf-8') as f:
+                        f.write(header + content)
+                    
+                    convert_updated_count += 1
+                    print(f"[OK] Updated header in: {convert_file.name}")
+                
+                # Update 05_doc-format/*_v31.txt header
+                if format_file and format_file.exists():
+                    with open(format_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Create header
+                    header = f"PDF Directory: {pdf_directory}\nPDF Public Link: {gcs_url}\n\n"
+                    
+                    # Remove old header if exists
+                    if content.startswith("PDF URL:") or content.startswith("PDF Directory:") or content.startswith("PDF Public Link:"):
+                        lines = content.split('\n')
+                        content_start = 0
+                        for i, line in enumerate(lines):
+                            if not line.startswith("PDF") and line.strip():
+                                content_start = i
+                                break
+                        content = '\n'.join(lines[content_start:])
+                    
+                    # Write updated content
+                    with open(format_file, 'w', encoding='utf-8') as f:
+                        f.write(header + content)
+                    
+                    format_updated_count += 1
+                    print(f"[OK] Updated header in: {format_file.name}")
+                
+                if not convert_file or not convert_file.exists():
+                    print(f"[WARN] No convert file found: {base_name}_c.txt")
+                if not format_file or not format_file.exists():
+                    print(f"[WARN] No format file found: {base_name}_v31.txt")
+                
+            except Exception as e:
+                print(f"[FAIL] Error processing {pdf_path.name}: {e}")
+                continue
+        
+        print(f"\n[SUMMARY] Uploaded {uploaded_count} PDFs to GCS")
+        print(f"[SUMMARY] Updated {convert_updated_count} convert files (04_doc-convert)")
+        print(f"[SUMMARY] Updated {format_updated_count} format files (05_doc-format)")
+        
+    except Exception as e:
+        print(f"[ERROR] GCS upload failed: {e}")
+        raise DocumentProcessingError(f"Phase 6 GCS upload failed: {e}")
+
+# === PHASE 7: VERIFY ===
+def phase7_verify(root_dir):
+    """Comprehensive verification: PDF directory, online access, and content accuracy"""
+    print("\nPHASE 7: VERIFY - COMPREHENSIVE VALIDATION")
     print("-" * 80)
     
     # Ensure directory structure exists
@@ -1371,6 +1515,38 @@ def phase6_verify(root_dir):
             with open(txt_file, 'r', encoding='utf-8') as f:
                 formatted_text = f.read()
             
+            # Validate header information
+            header_issues = []
+            lines = formatted_text.split('\n')
+            
+            # Check for PDF Directory header
+            if not any(line.startswith("PDF Directory:") for line in lines[:10]):
+                header_issues.append("Missing PDF Directory header")
+            else:
+                # Validate PDF Directory path
+                for line in lines[:10]:
+                    if line.startswith("PDF Directory:"):
+                        pdf_dir = line.replace("PDF Directory:", "").strip()
+                        # Get expected directory from root_dir
+                        full_path = str(root_dir).replace('\\', '/')
+                        if full_path.startswith('E:/') or full_path.startswith('e:/'):
+                            full_path = full_path[3:]
+                        if pdf_dir != full_path:
+                            header_issues.append(f"PDF Directory mismatch: expected '{full_path}', found '{pdf_dir}'")
+                        break
+            
+            # Check for PDF Public Link header
+            if not any(line.startswith("PDF Public Link:") for line in lines[:10]):
+                header_issues.append("Missing PDF Public Link header")
+            else:
+                # Validate URL is public format
+                for line in lines[:10]:
+                    if line.startswith("PDF Public Link:"):
+                        url = line.replace("PDF Public Link:", "").strip()
+                        if not url.startswith("https://storage.cloud.google.com/"):
+                            header_issues.append(f"URL not in public format: {url}")
+                        break
+            
             # Count pages in formatted text (look for bracketed markers)
             formatted_pages = formatted_text.count('[BEGIN PDF Page ')
             
@@ -1398,8 +1574,8 @@ def phase6_verify(root_dir):
             # Get character counts
             formatted_chars = len(formatted_text)
             
-            # Check for issues
-            issues = []
+            # Check for issues (combine header issues with content issues)
+            issues = header_issues.copy()
             if formatted_pages == 0:
                 issues.append("No page markers found")
             elif abs(formatted_pages - pdf_pages) > 2:
@@ -1409,12 +1585,12 @@ def phase6_verify(root_dir):
                 issues.append("Text length unusually short")
             
             if issues:
-                print(f"  [WARN] Deviations found:")
+                print(f"  [WARN] Issues found:")
                 for issue in issues:
                     print(f"    - {issue}")
                 status = 'WARNING'
             else:
-                print(f"  [OK] Verified: {pdf_pages} pages, {formatted_chars:,} chars")
+                print(f"  [OK] Verified: {pdf_pages} pages, {formatted_chars:,} chars, headers valid")
                 status = 'OK'
             
             verification_results.append({
@@ -1511,158 +1687,6 @@ def phase6_verify(root_dir):
     print(f"\n[OK] Final report saved: {report_path.name}")
     report_data['verify'] = verification_results
 
-# === PHASE 7: GCS UPLOAD ===
-def phase7_gcs_upload(root_dir):
-    """Upload cleaned PDFs to GCS and insert URLs into text files.
-    
-    This phase:
-    1. Identifies the full directory path relative to workspace
-    2. Uploads all *_o.pdf files from 03_doc-clean to GCS with full path
-    3. Generates public URLs for each uploaded PDF
-    4. Updates headers in 04_doc-convert/*_c.txt files with PDF Directory and PDF Public Link
-    5. Updates headers in 05_doc-format/*_v31.txt files with PDF Directory and PDF Public Link
-    """
-    print("\n" + "="*80)
-    print("PHASE 7: GCS UPLOAD & URL INSERTION")
-    print("="*80)
-    
-    clean_dir = root_dir / '03_doc-clean'
-    convert_dir = root_dir / '04_doc-convert'
-    format_dir = root_dir / '05_doc-format'
-    
-    if not clean_dir.exists():
-        print(f"[SKIP] Clean directory not found: {clean_dir}")
-        return
-    
-    # Get full directory path relative to E:\ drive
-    # Example: E:\01_prjct_active\02_legal_system_v1.2\x_docs\01_fremont\15_coa
-    # Result: 01_prjct_active/02_legal_system_v1.2/x_docs/01_fremont/15_coa
-    full_path = str(root_dir).replace('\\', '/')
-    if full_path.startswith('E:/'):
-        full_path = full_path[3:]  # Remove 'E:/'
-    elif full_path.startswith('e:/'):
-        full_path = full_path[3:]  # Remove 'e:/'
-    
-    gcs_prefix = f"docs/{full_path}"
-    pdf_directory = full_path
-    
-    pdf_files = sorted(clean_dir.glob('*_o.pdf'))
-    if not pdf_files:
-        print(f"[SKIP] No cleaned PDFs found in {clean_dir}")
-        return
-    
-    print(f"[INFO] Found {len(pdf_files)} PDFs to upload")
-    print(f"[INFO] PDF Directory: {pdf_directory}")
-    print(f"[INFO] GCS destination: gs://{GCS_BUCKET}/{gcs_prefix}/")
-    
-    try:
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(GCS_BUCKET)
-        
-        uploaded_count = 0
-        convert_updated_count = 0
-        format_updated_count = 0
-        
-        for pdf_path in pdf_files:
-            try:
-                # Upload to GCS with full directory path
-                blob_name = f"{gcs_prefix}/{pdf_path.name}"
-                blob = bucket.blob(blob_name)
-                
-                # Check if blob exists
-                if blob.exists():
-                    print(f"\n[EXISTS] {pdf_path.name} already in GCS")
-                    gcs_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_name}"
-                    uploaded_count += 1
-                else:
-                    # Upload new file
-                    print(f"\n[UPLOAD] {pdf_path.name} → gs://{GCS_BUCKET}/{blob_name}")
-                    blob.upload_from_filename(str(pdf_path))
-                    blob.make_public()
-                    gcs_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_name}"
-                    uploaded_count += 1
-                    print(f"[OK] Uploaded: {gcs_url}")
-                
-                # Find corresponding files (remove only suffix _o, not all occurrences)
-                base_name = pdf_path.stem
-                if base_name.endswith('_o'):
-                    base_name = base_name[:-2]  # Remove last 2 chars (_o)
-                convert_file = convert_dir / f"{base_name}_c.txt" if convert_dir.exists() else None
-                format_file = format_dir / f"{base_name}_v31.txt" if format_dir.exists() else None
-                
-                # Update 04_doc-convert/*_c.txt header
-                if convert_file and convert_file.exists():
-                    with open(convert_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    # Create header
-                    header = f"PDF Directory: {pdf_directory}\nPDF Public Link: {gcs_url}\n\n"
-                    
-                    # Remove old header if exists (backward compatibility)
-                    if content.startswith("PDF URL:"):
-                        content = content.split('\n', 1)[1].lstrip('\n')
-                    elif content.startswith("PDF Directory:"):
-                        # Remove old header completely
-                        lines = content.split('\n')
-                        content_start = 0
-                        for i, line in enumerate(lines):
-                            if not line.startswith("PDF") and line.strip():
-                                content_start = i
-                                break
-                        content = '\n'.join(lines[content_start:])
-                    
-                    # Write updated content
-                    with open(convert_file, 'w', encoding='utf-8') as f:
-                        f.write(header + content)
-                    
-                    convert_updated_count += 1
-                    print(f"[OK] Updated header in: {convert_file.name}")
-                
-                # Update 05_doc-format/*_v31.txt header
-                if format_file and format_file.exists():
-                    with open(format_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    # Create header
-                    header = f"PDF Directory: {pdf_directory}\nPDF Public Link: {gcs_url}\n\n"
-                    
-                    # Remove old header if exists (backward compatibility)
-                    if content.startswith("PDF URL:"):
-                        content = content.split('\n', 1)[1].lstrip('\n')
-                    elif content.startswith("PDF Directory:"):
-                        # Remove old header completely
-                        lines = content.split('\n')
-                        content_start = 0
-                        for i, line in enumerate(lines):
-                            if not line.startswith("PDF") and line.strip():
-                                content_start = i
-                                break
-                        content = '\n'.join(lines[content_start:])
-                    
-                    # Write updated content
-                    with open(format_file, 'w', encoding='utf-8') as f:
-                        f.write(header + content)
-                    
-                    format_updated_count += 1
-                    print(f"[OK] Updated header in: {format_file.name}")
-                
-                if not convert_file or not convert_file.exists():
-                    print(f"[WARN] No convert file found: {base_name}_c.txt")
-                if not format_file or not format_file.exists():
-                    print(f"[WARN] No format file found: {base_name}_v31.txt")
-                
-            except Exception as e:
-                print(f"[FAIL] Error processing {pdf_path.name}: {e}")
-                continue
-        
-        print(f"\n[SUMMARY] Uploaded {uploaded_count} PDFs to GCS")
-        print(f"[SUMMARY] Updated {convert_updated_count} convert files (04_doc-convert)")
-        print(f"[SUMMARY] Updated {format_updated_count} format files (05_doc-format)")
-        
-    except Exception as e:
-        print(f"[ERROR] GCS upload failed: {e}")
-        raise DocumentProcessingError(f"Phase 7 GCS upload failed: {e}")
-
 # === INTERACTIVE MENU ===
 def interactive_menu():
     """Interactive menu for user to select phases and verification mode"""
@@ -1682,7 +1706,7 @@ def interactive_menu():
         print("Invalid choice. Please enter 1 or 2.")
     
     if choice == '1':
-        phases = ['directory', 'rename', 'clean', 'convert', 'format', 'verify', 'gcs_upload']
+        phases = ['directory', 'rename', 'clean', 'convert', 'format', 'gcs_upload', 'verify']
     else:
         print("\n2. Select which phases to run (enter phase numbers separated by spaces):")
         print("   [1] Directory    - Move PDFs to 01_doc-original")
@@ -1690,8 +1714,8 @@ def interactive_menu():
         print("   [3] Clean       - PDF enhancement (600 DPI, PDF/A)")
         print("   [4] Convert     - Text convertion with Google Vision")
         print("   [5] Format      - AI-powered text formatting")
-        print("   [6] Verify      - Accuracy verification")
-        print("   [7] GCS Upload  - Upload to cloud storage & insert URLs")
+        print("   [6] GCS Upload  - Upload to cloud storage & update headers")
+        print("   [7] Verify      - Comprehensive verification")
         
         while True:
             phase_input = input("\nEnter phase numbers (e.g., '1 2 3' or '2 3'): ").strip()
@@ -1702,7 +1726,7 @@ def interactive_menu():
         
         phase_map = {
             '1': 'directory', '2': 'rename', '3': 'clean',
-            '4': 'convert', '5': 'format', '6': 'verify', '7': 'gcs_upload'
+            '4': 'convert', '5': 'format', '6': 'gcs_upload', '7': 'verify'
         }
         phases = [phase_map[p] for p in phase_nums]
     
@@ -1735,8 +1759,8 @@ def confirm_phase(phase_name):
         'clean': 'PDF enhancement (600 DPI, PDF/A) with _o suffix',
         'convert': 'Text convertion with Google Vision API with _c suffix',
         'format': 'AI-powered text formatting with Gemini with _v31 suffix',
-        'verify': 'Accuracy verification and reporting',
-        'gcs_upload': 'Upload PDFs to GCS and insert URLs into text files'
+        'gcs_upload': 'Upload PDFs to GCS and update file headers with directory and public links',
+        'verify': 'Comprehensive verification: PDF directory, online access, and content accuracy'
     }
     
     print("\n" + "-"*80)
@@ -1756,7 +1780,7 @@ def confirm_phase(phase_name):
 def main():
     parser = argparse.ArgumentParser(description='Document Processing Pipeline v31')
     parser.add_argument('--dir', type=str, help='Target directory to process')
-    parser.add_argument('--phase', nargs='+', choices=['directory', 'rename', 'clean', 'convert', 'format', 'verify', 'gcs_upload', 'all'],
+    parser.add_argument('--phase', nargs='+', choices=['directory', 'rename', 'clean', 'convert', 'format', 'gcs_upload', 'verify', 'all'],
                        default=None, help='Phases to run (omit for interactive mode)')
     parser.add_argument('--no-verify', action='store_true', help='Skip phase verification prompts')
     
@@ -1764,7 +1788,7 @@ def main():
     
     if not args.dir:
         print("Error: --dir parameter required")
-        print("Usage: python doc-process-v31.py --dir /path/to/directory [--phase directory rename clean convert format verify gcs_upload]")
+        print("Usage: python doc-process-v31.py --dir /path/to/directory [--phase directory rename clean convert format gcs_upload verify]")
         sys.exit(1)
     
     root_dir = Path(args.dir)
@@ -1781,7 +1805,7 @@ def main():
         # Command-line mode
         phases = args.phase
         if 'all' in phases:
-            phases = ['directory', 'rename', 'clean', 'convert', 'format', 'verify', 'gcs_upload']
+            phases = ['directory', 'rename', 'clean', 'convert', 'format', 'gcs_upload', 'verify']
         verify_before_phase = not args.no_verify
     
     # Run preflight checks (skip OCR tools for convert/format/verify/gcs_upload phases)
@@ -1796,8 +1820,8 @@ def main():
         'clean': phase3_clean,
         'convert': phase4_convert,
         'format': phase5_format,
-        'verify': phase6_verify,
-        'gcs_upload': phase7_gcs_upload
+        'gcs_upload': phase6_gcs_upload,
+        'verify': phase7_verify
     }
     
     for phase_name in phases:
