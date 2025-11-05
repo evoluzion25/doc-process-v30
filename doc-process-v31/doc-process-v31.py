@@ -252,18 +252,16 @@ def phase1_directory(root_dir):
     
     moved_count = 0
     for pdf in pdf_files:
-        # Check if already has _d suffix
-        if pdf.stem.endswith('_o'):
-            new_name = pdf.name
-        else:
-            # Remove any existing suffix and add _d
-            base_name = pdf.stem
-            # Remove common suffixes if present
-            for suffix in ['_a', '_r', '_t', '_c', '_v22', '_v31']:
-                if base_name.endswith(suffix):
-                    base_name = base_name[:-len(suffix)]
-                    break
-            new_name = f"{base_name}_d.pdf"
+        # Always add _d suffix (remove any existing suffix first)
+        base_name = pdf.stem
+        
+        # Remove common suffixes if present
+        for suffix in ['_o', '_d', '_r', '_a', '_t', '_c', '_v22', '_v31']:
+            if base_name.endswith(suffix):
+                base_name = base_name[:-len(suffix)]
+                break
+        
+        new_name = f"{base_name}_d.pdf"
         
         target_path = original_dir / new_name
         
