@@ -4,11 +4,22 @@
 
 Complete 7-phase pipeline for legal document processing with parallel execution, OCR enhancement, AI-powered text formatting, and cloud storage integration.
 
-**Pipeline**: Directory → Rename → Clean → Convert → Format → Verify → GCS Upload
+**Pipeline**: Directory → Rename → Clean → Convert → Format → GCS Upload → Verify
 
 ## What's New in v31
 
-### Phase 7 GCS Upload Enhancements (November 2025)
+### Phase Reorganization (November 2025)
+- **Phase 6 is now GCS Upload**: Upload PDFs to cloud storage and update file headers
+- **Phase 7 is now Comprehensive Verification**: Validates PDF directory, online access, and content accuracy
+- **New verification checks**:
+  - PDF Directory header validation (matches actual folder path)
+  - PDF Public Link format validation (public URL, not authenticated)
+  - Page count accuracy
+  - Character count validation
+  - All previous verification metrics retained
+- **Logical flow**: Upload files first, then verify everything is correct
+
+### Phase 6 GCS Upload Enhancements (November 2025)
 - **Full directory path preservation**: GCS uploads now use complete directory structure
 - **Example**: `E:\01_prjct_active\02_legal_system_v1.2\x_docs\01_fremont\15_coa` → `gs://fremont-1/docs/01_prjct_active/02_legal_system_v1.2/x_docs/01_fremont/15_coa/`
 - **Dual header updates**: Updates both 04_doc-convert/*_c.txt and 05_doc-format/*_v31.txt files
