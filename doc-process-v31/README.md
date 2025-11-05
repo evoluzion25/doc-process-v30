@@ -8,6 +8,16 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## What's New in v31
 
+### Phase 7 GCS Upload Enhancements (November 2025)
+- **Full directory path preservation**: GCS uploads now use complete directory structure
+- **Example**: `E:\01_prjct_active\02_legal_system_v1.2\x_docs\01_fremont\15_coa` → `gs://fremont-1/docs/01_prjct_active/02_legal_system_v1.2/x_docs/01_fremont/15_coa/`
+- **Dual header updates**: Updates both 04_doc-convert/*_c.txt and 05_doc-format/*_v31.txt files
+- **New header format**:
+  - `PDF Directory: 01_prjct_active/02_legal_system_v1.2/x_docs/01_fremont/15_coa`
+  - `PDF Public Link: https://storage.cloud.google.com/fremont-1/docs/.../filename.pdf`
+- **Backward compatibility**: Removes old "PDF URL:" headers when updating
+- Supports reorganized folder structures without breaking GCS links
+
 ### Phase 2 Rename Enhancements (November 2025)
 - **Smart date detection**: Skips adding date prefix if filename already starts with YYYYMMDD format
 - **Google Sheets removal**: Automatically removes "Google Sheets" text from filenames
