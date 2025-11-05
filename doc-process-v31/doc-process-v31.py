@@ -600,6 +600,7 @@ def phase3_clean(root_dir):
     
     # Filter out already processed files
     files_to_process = []
+    large_files = []  # Files > 5MB process sequentially to avoid hanging
     skipped_count = 0
     for pdf in pdf_files:
         base_name = pdf.stem[:-2]  # Remove _r
@@ -608,40 +609,63 @@ def phase3_clean(root_dir):
             print(f"[SKIP] Already processed: {pdf.name}")
             skipped_count += 1
         else:
-            files_to_process.append(pdf)
+            file_size_mb = pdf.stat().st_size / (1024 * 1024)
+            if file_size_mb > 5:
+                large_files.append(pdf)
+            else:
+                files_to_process.append(pdf)
     
-    if not files_to_process:
+    if not files_to_process and not large_files:
         print("[SKIP] All files already processed")
         return
     
-    print(f"[INFO] Processing {len(files_to_process)} PDFs with {MAX_WORKERS_CPU} workers...")
-    
-    # Process files in parallel
-    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS_CPU) as executor:
-        futures = {
-            executor.submit(_process_clean_pdf, pdf, clean_dir): pdf 
-            for pdf in files_to_process
-        }
-        
-        for future in concurrent.futures.as_completed(futures):
-            pdf = futures[future]
-            try:
-                result = future.result()
-                if result.status in ['OK', 'PARTIAL', 'COPIED']:
-                    print(f"[OK] {result.file_name}")
-                    report_data['clean'].append({'file': pdf.name, 'status': result.status})
-                else:
-                    print(f"[FAIL] {result.file_name}: {result.error or 'Unknown error'}")
-                    report_data['clean'].append({'file': pdf.name, 'status': 'FAILED'})
-            except Exception as e:
-                print(f"[FAIL] {pdf.name}: {e}")
+    # Process large files sequentially first (prevents hanging)
+    if large_files:
+        print(f"[INFO] Processing {len(large_files)} large files (>5MB) sequentially...")
+        for pdf in large_files:
+            file_size_mb = pdf.stat().st_size / (1024 * 1024)
+            print(f"Processing: {pdf.name} ({file_size_mb:.1f} MB)...")
+            result = _process_clean_pdf(pdf, clean_dir)
+            if result.status in ['OK', 'PARTIAL', 'COPIED']:
+                print(f"[OK] {result.file_name}")
+                report_data['clean'].append({'file': pdf.name, 'status': result.status})
+            else:
+                print(f"[FAIL] {result.file_name}: {result.error or 'Unknown error'}")
                 report_data['clean'].append({'file': pdf.name, 'status': 'FAILED'})
     
-    print(f"\n[OK] Processed {len(files_to_process)} PDFs")
+    # Process smaller files in parallel
+    if files_to_process:
+        print(f"[INFO] Processing {len(files_to_process)} PDFs with {MAX_WORKERS_CPU} workers...")
+    # Process smaller files in parallel
+    if files_to_process:
+        print(f"[INFO] Processing {len(files_to_process)} PDFs with {MAX_WORKERS_CPU} workers...")
+        
+        # Process files in parallel
+        with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS_CPU) as executor:
+            futures = {
+                executor.submit(_process_clean_pdf, pdf, clean_dir): pdf 
+                for pdf in files_to_process
+            }
+            
+            for future in concurrent.futures.as_completed(futures):
+                pdf = futures[future]
+                try:
+                    result = future.result()
+                    if result.status in ['OK', 'PARTIAL', 'COPIED']:
+                        print(f"[OK] {result.file_name}")
+                        report_data['clean'].append({'file': pdf.name, 'status': result.status})
+                    else:
+                        print(f"[FAIL] {result.file_name}: {result.error or 'Unknown error'}")
+                        report_data['clean'].append({'file': pdf.name, 'status': 'FAILED'})
+                except Exception as e:
+                    print(f"[FAIL] {pdf.name}: {e}")
+                    report_data['clean'].append({'file': pdf.name, 'status': 'FAILED'})
+    
+    print(f"\n[OK] Processed {len(files_to_process) + len(large_files)} PDFs")
     success_count = len([r for r in report_data['clean'] if r.get('status') in ['OK', 'PARTIAL', 'COPIED']])
     if skipped_count > 0:
         print(f"[INFO] Skipped {skipped_count} already processed files")
-    print(f"[OK] Successfully processed: {success_count}/{len(files_to_process)} files")
+    print(f"[OK] Successfully processed: {success_count}/{len(files_to_process) + len(large_files)} files")
 
 def _process_clean_pdf(pdf_path, clean_dir):
     """Process a single PDF for Phase 3 (Clean). Runs in parallel worker process."""
