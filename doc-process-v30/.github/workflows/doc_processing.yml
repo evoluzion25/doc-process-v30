@@ -1,0 +1,49 @@
+name: Manual Document Processing
+
+on:
+  workflow_dispatch:
+    inputs:
+      directory:
+        description: 'Project directory to process (repo-relative path)'
+        required: true
+        default: '.'
+      files:
+        description: 'Optional: Specific file(s) to process (space-separated, repo-relative)'
+        required: false
+
+jobs:
+  process-documents:
+    runs-on: windows-latest
+
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install PyMuPDF google-cloud-vision google-cloud-storage google-generativeai python-dotenv
+
+    - name: Install Tesseract and Ghostscript
+      run: |
+        choco install tesseract-ocr --params "/Lang=eng" -y
+        choco install ghostscript -y
+
+    - name: Configure GCP credentials file
+      shell: bash
+      run: |
+        echo "${{ secrets.GCP_SA_KEY }}" > $HOME/gcp-credentials.json
+        echo "GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcp-credentials.json" >> $GITHUB_ENV
+
+    - name: Run Document Processing Pipeline
+      env:
+        GOOGLEAISTUDIO_API_KEY: ${{ secrets.GOOGLEAISTUDIO_API_KEY }}
+        GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+      run: |
+        python doc-process-v30.py --phase all --dir "${{ github.event.inputs.directory }}" --files ${{ github.event.inputs.files }} --no-verify
+

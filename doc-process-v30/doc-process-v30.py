@@ -1,0 +1,1543 @@
+#!/usr/bin/env python3
+"""
+Document Processing Pipeline v30
+5-phase pipeline with intelligent renaming and Google Vision OCR
+"""
+import fitz
+from pathlib import Path
+import shutil
+from datetime import datetime
+import subprocess
+import sys
+import os
+import argparse
+import google.generativeai as genai
+from google.cloud import vision
+from google.cloud import storage
+import re
+import json
+import time
+import csv
+from dotenv import load_dotenv
+
+# === CONFIGURATION ===
+# Load environment variables from a .env file if it exists
+load_dotenv()
+
+GEMINI_API_KEY = os.environ.get('GOOGLEAISTUDIO_API_KEY', '')
+GOOGLE_APPLICATION_CREDENTIALS = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', '')
+GCS_BUCKET = os.environ.get('GCS_BUCKET', 'fremont-1')
+MODEL_NAME = "gemini-2.5-pro"
+MAX_OUTPUT_TOKENS = 65536
+
+# Common acronyms for legal documents
+PARTY_ACRONYMS = {
+    "Reedy": "RR",
+    "Fremont Insurance": "FIC", 
+    "Fremont": "FIC",
+    "Clerk": "Clerk",
+    "Court": "Court"
+}
+
+CASE_ACRONYMS = ["9c1", "9c2", "3c1", "3c2", "9c_powers"]
+
+# === GLOBAL REPORT TRACKING ===
+report_data = {
+    'preflight': {}, 'organize': {}, 'rename': [], 
+    'ocr': [], 'extract': [], 'format': [], 'verify': []
+}
+
+# Optional selection filter for targeting specific files across phases
+SELECTED_BASENAMES = None  # set[str] of base names without suffixes (_r/_o)
+
+
+def _resolve_executable(name: str) -> str:
+    """Resolve full path to an executable, favoring the current Python's Scripts dir on Windows.
+
+    Returns the resolved path if found, else returns the input name for PATH lookup.
+    """
+    try:
+        # First try PATH
+        path = shutil.which(name)
+        if path:
+            return path
+        # On Windows, check alongside the Python executable (venv Scripts)
+        py = Path(sys.executable)
+        candidates = []
+        if os.name == 'nt':
+            candidates.append(py.with_name(f"{name}.exe"))
+            candidates.append(py.parent / f"{name}.exe")
+        else:
+            candidates.append(py.with_name(name))
+            candidates.append(py.parent / name)
+        for c in candidates:
+            if c.exists():
+                return str(c)
+    except Exception:
+        pass
+    return name
+
+# === NEW HELPER: PDF CLEANING ===
+def clean_pdf_thoroughly(pdf_path: str, output_path: str) -> bool:
+    """
+    Clean a PDF by removing all annotations, bookmarks, and metadata using PyMuPDF.
+    
+    Returns True if cleaning was successful, False otherwise.
+    """
+    try:
+        doc = fitz.open(pdf_path)
+        
+        # 1. Remove all annotations (comments, highlights, etc.) from every page
+        for page in doc:
+            for annot in page.annots():
+                page.delete_annot(annot)
+        
+        # 2. Clear bookmarks (Table of Contents)
+        if doc.toc:
+            doc.set_toc([])
+            
+        # 3. Clear document metadata dictionary
+        doc.set_metadata({})
+        
+        # Save the cleaned document
+        doc.save(output_path, garbage=4, deflate=True)
+        doc.close()
+        print(f"  [OK] Thoroughly cleaned PDF: {Path(pdf_path).name}")
+        return True
+    except Exception as e:
+        print(f"  [WARN] Thorough PDF cleaning failed for {Path(pdf_path).name}: {e}")
+        return False
+
+# === PHASE 0: PRE-FLIGHT CHECKS ===
+def preflight_checks(skip_ocr_check=False):
+    """Verify all credentials and tools before starting"""
+    print("\n" + "="*80)
+    print("DOCUMENT PROCESSING v30")
+    print(f"Location: y_apps/x3_doc-processing/doc-process-v30/")
+    print("="*80)
+    print("\nPHASE 0: PRE-FLIGHT CREDENTIAL & TOOL CHECKS")
+    print("-" * 80)
+    
+    all_ok = True
+    
+    # Check Gemini API Key
+    if GEMINI_API_KEY:
+        print("[OK] Gemini API Key: Present")
+        report_data['preflight']['gemini_api'] = 'OK'
+    else:
+        print("[FAIL] Gemini API Key: Missing")
+        report_data['preflight']['gemini_api'] = 'MISSING'
+        all_ok = False
+    
+    # Check Google Cloud credentials
+    if GOOGLE_APPLICATION_CREDENTIALS and Path(GOOGLE_APPLICATION_CREDENTIALS).exists():
+        print("[OK] Google Cloud Vision: Configured")
+        report_data['preflight']['google_vision'] = 'OK'
+    else:
+        print("[FAIL] Google Cloud Vision: Not configured")
+        report_data['preflight']['google_vision'] = 'MISSING'
+        all_ok = False
+    
+    # Check ocrmypdf (skip for extract/format/verify phases)
+    if not skip_ocr_check:
+        ocrmypdf_ok = False
+        # 1) PATH lookup
+        if shutil.which('ocrmypdf'):
+            ocrmypdf_ok = True
+        else:
+            # 2) Look for console script next to current Python (Windows venv Scripts)
+            try:
+                py_path = Path(sys.executable)
+                candidate = py_path.with_name('ocrmypdf.exe') if os.name == 'nt' else py_path.with_name('ocrmypdf')
+                if candidate.exists():
+                    ocrmypdf_ok = True
+            except Exception:
+                pass
+            # 3) Attempt import as a last resort
+            if not ocrmypdf_ok:
+                try:
+                    import ocrmypdf  # noqa: F401
+                    ocrmypdf_ok = True
+                except Exception:
+                    ocrmypdf_ok = False
+
+        if ocrmypdf_ok:
+            print("[OK] ocrmypdf: Installed")
+            report_data['preflight']['ocrmypdf'] = 'OK'
+        else:
+            print("[FAIL] ocrmypdf: Not found")
+            report_data['preflight']['ocrmypdf'] = 'MISSING'
+            all_ok = False
+    else:
+        print("[SKIP] ocrmypdf: Not required for this phase")
+        report_data['preflight']['ocrmypdf'] = 'SKIPPED'
+    
+    # Check Ghostscript (skip for extract/format/verify phases)
+    if not skip_ocr_check:
+        if shutil.which('gswin64c') or shutil.which('gs'):
+            print("[OK] Ghostscript: Installed")
+            report_data['preflight']['ghostscript'] = 'OK'
+        else:
+            print("[FAIL] Ghostscript: Not found")
+            report_data['preflight']['ghostscript'] = 'MISSING'
+            all_ok = False
+    else:
+        print("[SKIP] Ghostscript: Not required for this phase")
+        report_data['preflight']['ghostscript'] = 'SKIPPED'
+    
+    # Check PyMuPDF
+    try:
+        import fitz
+        print("[OK] PyMuPDF (fitz): Available")
+        report_data['preflight']['pymupdf'] = 'OK'
+    except ImportError:
+        print("[FAIL] PyMuPDF: Not installed")
+        report_data['preflight']['pymupdf'] = 'MISSING'
+        all_ok = False
+    
+    print("-" * 80)
+    if all_ok:
+        print("[OK] All requirements met - Ready to process")
+        return True
+    else:
+        print("[FAIL] Missing requirements - Cannot proceed")
+        return False
+
+# === DIRECTORY SETUP (Called by all phases) ===
+def ensure_directory_structure(root_dir):
+    """Ensure all pipeline directories exist - called by every phase"""
+    directories = [
+        "01_doc-original",
+        "02_doc-renamed", 
+        "03_doc-ocr",
+        "04_doc-txt-1",
+        "05_doc-txt-2",
+        "y_logs",
+        "z_old"
+    ]
+    
+    for dir_name in directories:
+        dir_path = root_dir / dir_name
+        dir_path.mkdir(exist_ok=True)
+    
+    # Create _old and _log subdirectories in pipeline directories (01-05)
+    pipeline_dirs = ["01_doc-original", "02_doc-renamed", "03_doc-ocr", "04_doc-txt-1", "05_doc-txt-2"]
+    for pipeline_dir in pipeline_dirs:
+        (root_dir / pipeline_dir / "_old").mkdir(exist_ok=True)
+        (root_dir / pipeline_dir / "_log").mkdir(exist_ok=True)
+    
+    # Create _duplicate directory in 01_doc-original
+    (root_dir / "01_doc-original" / "_duplicate").mkdir(exist_ok=True)
+
+# === PHASE 1: ORGANIZE - Move PDFs and add _o suffix ===
+def phase1_organize(root_dir):
+    """Move all PDFs from root to 01_doc-original and ensure _o suffix"""
+    print("\nPHASE 1: ORGANIZE - ORIGINAL PDF COLLECTION")
+    print("-" * 80)
+    
+    # Ensure directory structure exists
+    ensure_directory_structure(root_dir)
+    print(f"[OK] Verified all pipeline directories exist")
+    
+    original_dir = root_dir / "01_doc-original"
+    
+    pdf_files = list(root_dir.glob("*.pdf"))
+    
+    if not pdf_files:
+        print("[SKIP] No PDF files found in root directory")
+        report_data['organize']['status'] = 'SKIPPED'
+        # Continue to next phase - may have files already in 01_doc-original
+        return
+    
+    moved_count = 0
+    for pdf in pdf_files:
+        # Check if already has _o suffix
+        if pdf.stem.endswith('_o'):
+            new_name = pdf.name
+        else:
+            # Remove any existing suffix and add _o
+            base_name = pdf.stem
+            # Remove common suffixes if present
+            for suffix in ['_a', '_r', '_t', '_c', '_v22', '_v30']:
+                if base_name.endswith(suffix):
+                    base_name = base_name[:-len(suffix)]
+                    break
+            new_name = f"{base_name}_o.pdf"
+        
+        target_path = original_dir / new_name
+        
+        # Avoid overwriting if file already exists
+        if target_path.exists():
+            print(f"[SKIP] {new_name} - already exists")
+            continue
+        
+        shutil.move(str(pdf), str(target_path))
+        print(f"[OK] Moved: {pdf.name} → {new_name}")
+        moved_count += 1
+    
+    report_data['organize']['moved'] = moved_count
+    report_data['organize']['total'] = len(pdf_files)
+    print(f"\n[OK] Organized {moved_count} PDF files")
+    
+    # Sync to GCS
+    sync_all_directories_to_gcs(root_dir)
+    
+    # ALWAYS run duplicate detection as standalone subprocess
+    # COMMENTED OUT - Too slow for now
+    # detect_duplicates(root_dir)
+
+def detect_duplicates(root_dir):
+    """Standalone subprocess to detect and move duplicate PDFs using Gemini"""
+    print("\n[DUPLICATE DETECTION] Analyzing PDFs for duplicate content...")
+    print("-" * 80)
+    
+    original_dir = root_dir / "01_doc-original"
+    all_pdfs = [f for f in original_dir.glob("*_o.pdf") if not f.parent.name.startswith('_')]
+    
+    if len(all_pdfs) < 2:
+        print("[SKIP] Less than 2 PDFs - no duplicates possible")
+        return
+    
+    # Configure Gemini for duplicate detection
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(MODEL_NAME)
+    
+    # Extract content fingerprints for all PDFs
+    pdf_fingerprints = {}
+    
+    for pdf in all_pdfs:
+        print(f"Analyzing: {pdf.name}...")
+        try:
+            # Extract first page text as fingerprint
+            doc = fitz.open(str(pdf))
+            first_page_text = doc[0].get_text()[:2000]  # First 2000 chars
+            doc.close()
+            
+            # Use Gemini to create content fingerprint
+            prompt = f"""Analyze this document excerpt and create a brief fingerprint (2-3 sentences) describing:
+1. Document type (complaint, motion, letter, etc.)
+2. Key parties or entities mentioned
+3. Main subject matter or date range
+
+Document excerpt:
+{first_page_text}
+
+Return ONLY the fingerprint, no other text."""
+            
+            response = model.generate_content(prompt)
+            fingerprint = response.text.strip()
+            pdf_fingerprints[pdf] = fingerprint
+            
+        except Exception as e:
+            print(f"  [WARN] Could not analyze {pdf.name}: {e}")
+            pdf_fingerprints[pdf] = f"ERROR: {str(e)}"
+    
+    # Compare fingerprints to find duplicates
+    duplicate_dir = original_dir / "_duplicate"
+    duplicates_found = []
+    processed = set()
+    
+    for i, (pdf1, fp1) in enumerate(pdf_fingerprints.items()):
+        if pdf1 in processed:
+            continue
+            
+        for pdf2, fp2 in list(pdf_fingerprints.items())[i+1:]:
+            if pdf2 in processed:
+                continue
+            
+            # Ask Gemini if these are duplicates
+            comparison_prompt = f"""Compare these two document fingerprints and determine if they represent the SAME document (duplicate content).
+
+Document 1 ({pdf1.name}):
+{fp1}
+
+Document 2 ({pdf2.name}):
+{fp2}
+
+Answer ONLY with "DUPLICATE" if they are the same document, or "DIFFERENT" if they are different documents."""
+            
+            try:
+                response = model.generate_content(comparison_prompt)
+                result = response.text.strip().upper()
+                
+                if "DUPLICATE" in result:
+                    # Move the longer filename to _duplicate (likely has more metadata)
+                    if len(pdf2.name) > len(pdf1.name):
+                        duplicate = pdf2
+                        keep = pdf1
+                    else:
+                        duplicate = pdf1
+                        keep = pdf2
+                    
+                    # Move duplicate
+                    target = duplicate_dir / duplicate.name
+                    shutil.move(str(duplicate), str(target))
+                    duplicates_found.append(duplicate.name)
+                    processed.add(duplicate)
+                    print(f"  [DUPLICATE] Moved {duplicate.name} (keeping {keep.name})")
+                    
+            except Exception as e:
+                print(f"  [WARN] Could not compare {pdf1.name} and {pdf2.name}: {e}")
+    
+    if duplicates_found:
+        print(f"\n[OK] Found and moved {len(duplicates_found)} duplicate PDFs to _duplicate/")
+    else:
+        print(f"\n[OK] No duplicates found - all {len(all_pdfs)} PDFs are unique")
+
+# === PHASE 2: RENAME - Intelligent file renaming ===
+def extract_metadata_with_gemini(pdf_path, model):
+    """Use Gemini to analyze PDF and extract date/party/description"""
+    import time
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Extract first page text
+            doc = fitz.open(pdf_path)
+            first_page_text = doc[0].get_text()[:2000]  # First 2000 chars
+            doc.close()
+            
+            prompt = f"""Analyze this legal document first page and extract metadata in JSON format:
+
+{first_page_text}
+
+Extract and return ONLY a JSON object with these fields:
+{{
+  "date": "YYYYMMDD format - document date or filing date",
+  "party": "Party acronym (RR=Reedy, FIC=Fremont Insurance, Court, Clerk)",
+  "case": "Case number acronym (9c1, 9c2, 3c1, 3c2, etc.) if found",
+  "description": "Short hyphenated description (2-4 words, use hyphens not spaces)"
+}}
+
+Examples of good descriptions:
+- "Motion-Venue-Change"
+- "Appraisal-Demand"
+- "Answer-Counterclaim"
+- "Hearing-Transcript"
+
+Return ONLY valid JSON, no explanations."""
+
+            response = model.generate_content(prompt)
+            result_text = response.text.strip()
+            
+            # Extract JSON from response
+            if '{' in result_text:
+                json_start = result_text.find('{')
+                json_end = result_text.rfind('}') + 1
+                json_str = result_text[json_start:json_end]
+                metadata = json.loads(json_str)
+                
+                # Small delay between API calls
+                time.sleep(0.5)
+                return metadata
+            else:
+                return None
+                
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"  [WARN] Attempt {attempt + 1} failed, retrying in 3 seconds...")
+                time.sleep(3)
+            else:
+                print(f"  [WARN] Gemini extraction failed after {max_retries} attempts: {e}")
+                return None
+    
+    return None
+
+def check_existing_naming(filename):
+    """Check if filename already matches v30 naming convention"""
+    # Pattern: YYYYMMDD_PARTY_Description_*.pdf
+    pattern = r'^\d{8}_[A-Z0-9]+_[A-Za-z0-9\-]+_[a-z]\.pdf$'
+    return bool(re.match(pattern, filename))
+
+def extract_date_from_filename(filename):
+    """Extract date from filename patterns like '1.31.22', '2025-02-26', etc."""
+    # Pattern 1: M.D.YY or MM.DD.YY
+    match = re.search(r'(\d{1,2})\.(\d{1,2})\.(\d{2})', filename)
+    if match:
+        month, day, year = match.groups()
+        year = f"20{year}"
+        return f"{year}{month.zfill(2)}{day.zfill(2)}"
+    
+    # Pattern 2: YYYY-MM-DD
+    match = re.search(r'(\d{4})-(\d{2})-(\d{2})', filename)
+    if match:
+        year, month, day = match.groups()
+        return f"{year}{month}{day}"
+    
+    return None
+
+def clean_filename(filename):
+    """Clean filename by removing initial dates, extra spaces, and replacing spaces/dashes with underscores"""
+    # Remove initial date patterns like "23 - ", "1.1.23 - ", "2023-01-01 - "
+    # Pattern 1: Leading number followed by " - " (e.g., "23 - ")
+    filename = re.sub(r'^\d{1,4}\s*-\s*', '', filename)
+    
+    # Pattern 2: Date patterns at start followed by " - " (e.g., "1.1.23 - ", "12.31.2023 - ")
+    filename = re.sub(r'^\d{1,2}\.\d{1,2}\.\d{2,4}\s*-\s*', '', filename)
+    
+    # Pattern 3: ISO date at start followed by " - " (e.g., "2023-01-01 - ")
+    filename = re.sub(r'^\d{4}-\d{2}-\d{2}\s*-\s*', '', filename)
+    
+    # Pattern 4: Timestamp patterns like "02-26T11-24" or similar
+    filename = re.sub(r'\d{2}-\d{2}T\d{2}-\d{2}', '', filename)
+    
+    # Remove any remaining date patterns from anywhere in filename (already extracted for prefix)
+    filename = re.sub(r'\d{1,2}\.\d{1,2}\.\d{2,4}', '', filename)
+    filename = re.sub(r'\d{4}-\d{2}-\d{2}', '', filename)
+    
+    # Remove email addresses in brackets like [kmgate@kalcounty.com]
+    filename = re.sub(r'\[[\w\.\-]+@[\w\.\-]+\]', '', filename)
+    
+    # Clean up multiple spaces, dashes, and underscores
+    filename = re.sub(r'\s*-\s*-\s*', '_', filename)  # Replace " - - " with single underscore
+    filename = re.sub(r'\s{2,}', ' ', filename)  # Replace multiple spaces with single space
+    
+    # Replace spaces and dashes with underscores
+    filename = re.sub(r'[\s\-]+', '_', filename)
+    
+    # Clean up leading/trailing underscores
+    filename = re.sub(r'^_+|_+$', '', filename)
+    
+    # Replace multiple underscores with single underscore
+    filename = re.sub(r'_{2,}', '_', filename)
+    
+    return filename
+
+def phase2_rename(root_dir):
+    """Copy files to 02_doc-renamed with date prefix + original name"""
+    print("\nPHASE 2: RENAME - ADD DATE PREFIX, PRESERVE ORIGINAL NAME")
+    print("-" * 80)
+    
+    # Ensure directory structure exists
+    ensure_directory_structure(root_dir)
+    
+    original_dir = root_dir / "01_doc-original"
+    renamed_dir = root_dir / "02_doc-renamed"
+    
+    pdf_files = [f for f in original_dir.glob("*_o.pdf") if not f.parent.name.startswith('_')]
+    
+    if not pdf_files:
+        print("[SKIP] No PDF files found in 01_doc-original")
+        return
+    
+    # Configure Gemini ONCE for all files
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(MODEL_NAME)
+    
+    # Track used names for deduplication
+    used_names = set()
+    
+    for pdf in pdf_files:
+        print(f"Processing: {pdf.name}...")
+        
+        # Get original filename without _o suffix
+        original_base = pdf.stem[:-2]  # Remove "_o"
+        
+        # Check if compilation (contains "Ex." or "Exhibit")
+        is_compilation = bool(re.search(r'\bEx\.\s*P\d+|\bExhibit\b', original_base, re.IGNORECASE))
+        
+        if is_compilation:
+            # Compilation: Clean and use RR_ prefix
+            clean_base = clean_filename(original_base)
+            new_name = f"RR_{clean_base}_r.pdf"
+            print(f"  [COMPILATION] Using RR_ prefix")
+        else:
+            # Try to extract date from filename first
+            date = extract_date_from_filename(original_base)
+            
+            # If no date in filename, use Gemini
+            if not date:
+                metadata = extract_metadata_with_gemini(pdf, model)
+                if metadata and isinstance(metadata, dict):
+                    date = (metadata.get('date', '') or '').replace('-', '')
+            
+            # Clean the filename: remove dates, extra spaces, replace spaces with underscores
+            clean_base = clean_filename(original_base)
+            
+            # Build new filename: YYYYMMDD_CleanedName_r.pdf or CleanedName_r.pdf
+            if date:
+                new_name = f"{date}_{clean_base}_r.pdf"
+            else:
+                new_name = f"{clean_base}_r.pdf"
+        
+        # Deduplicate: if name exists, add counter
+        if new_name in used_names:
+            counter = 2
+            base_name = new_name[:-6]  # Remove "_r.pdf"
+            while f"{base_name}_{counter}_r.pdf" in used_names:
+                counter += 1
+            new_name = f"{base_name}_{counter}_r.pdf"
+            print(f"  [DEDUP] Added counter: _{counter}")
+        
+        used_names.add(new_name)
+        target_path = renamed_dir / new_name
+        shutil.copy2(str(pdf), str(target_path))
+        print(f"  [OK] Renamed: {pdf.name} → {new_name}")
+        report_data['rename'].append({'original': pdf.name, 'renamed': new_name})
+    
+    print(f"\n[OK] Renamed {len(pdf_files)} files")
+
+# === PHASE 3: OCR - PDF Enhancement ===
+def run_subprocess(command):
+    """Run subprocess without timeout"""
+    try:
+        process = subprocess.run(command, check=True, capture_output=True, 
+                               text=True, encoding='utf-8')
+        return True, process.stdout
+    except subprocess.CalledProcessError as e:
+        return False, e.stderr
+
+def phase3_ocr(root_dir):
+    """Copy to 03_doc-ocr, clean all annotations/metadata, convert to PDF/A, OCR, and compress."""
+    print("\nPHASE 3: OCR - PDF ENHANCEMENT (Thorough Clean & Integrated Compression)")
+    print("-" * 80)
+    
+    # Ensure directory structure exists
+    ensure_directory_structure(root_dir)
+    
+    renamed_dir = root_dir / "02_doc-renamed"
+    ocr_dir = root_dir / "03_doc-ocr"
+    
+    pdf_files = [f for f in renamed_dir.glob("*_r.pdf") if not f.parent.name.startswith('_')]
+    # Optional filter: restrict to selected basenames
+    global SELECTED_BASENAMES
+    if SELECTED_BASENAMES:
+        pdf_files = [f for f in pdf_files if f.stem.endswith('_r') and f.stem[:-2] in SELECTED_BASENAMES]
+    
+    if not pdf_files:
+        print("[SKIP] No PDF files found in 02_doc-renamed")
+        return
+
+    skipped_count = 0
+    for pdf in pdf_files:
+        base_name = pdf.stem[:-2]  # Remove _r
+        output_path = ocr_dir / f"{base_name}_o.pdf"
+        
+        # Skip if output already exists
+        if output_path.exists():
+            print(f"[SKIP] Already processed: {pdf.name}")
+            skipped_count += 1
+            continue
+        
+        print(f"Processing: {pdf.name} → {output_path.name}")
+
+        # 1. THOROUGH CLEANING: Remove all annotations, bookmarks, metadata first
+        temp_clean_pdf = ocr_dir / f"{base_name}_precleaned_temp.pdf"
+        if not clean_pdf_thoroughly(str(pdf), str(temp_clean_pdf)):
+            print(f"  [WARN] Cleaning failed for {pdf.name}, attempting OCR on original...")
+            shutil.copy2(str(pdf), str(temp_clean_pdf))
+
+        # 2. OCR & COMPRESSION: Use ocrmypdf with integrated optimization
+        ocrmypdf_exec = _resolve_executable('ocrmypdf')
+        cmd = [
+            ocrmypdf_exec,
+            '--redo-ocr', '--output-type', 'pdfa',
+            '--oversample', '600',
+            '--optimize', '2',  # Safe, lossy optimizations (good for size)
+            '--image-dpi', '150', # Replicates Ghostscript /ebook setting for compression
+            str(temp_clean_pdf),
+            str(output_path)
+        ]
+        
+        success, out = run_subprocess(cmd)
+        
+        if not success:
+            print(f"  [WARN] Standard OCR failed. Trying Ghostscript fallback...")
+            # Fallback logic remains, but now also uses the optimized command
+            temp_gs_pdf = ocr_dir / f"{base_name}_gs_temp.pdf"
+            try:
+                gs_cmd = ['gswin64c', '-sDEVICE=pdfimage32', '-o', str(temp_gs_pdf), str(temp_clean_pdf)]
+                gs_success, _ = run_subprocess(gs_cmd)
+                if gs_success and temp_gs_pdf.exists():
+                    # Retry optimized OCR command on the Ghostscript-processed file
+                    cmd[-2] = str(temp_gs_pdf)
+                    success, _ = run_subprocess(cmd)
+                else:
+                    success = False
+                if temp_gs_pdf.exists(): temp_gs_pdf.unlink()
+            except Exception as e:
+                print(f"  [WARN] Ghostscript fallback error: {e}")
+                success = False
+
+        # 3. CLEANUP
+        if temp_clean_pdf.exists():
+            temp_clean_pdf.unlink()
+        
+        # 4. REPORTING
+        if success and output_path.exists():
+            original_size = pdf.stat().st_size
+            final_size = output_path.stat().st_size
+            reduction = ((original_size - final_size) / original_size) * 100 if original_size > 0 else 0
+            print(f"  [OK] OCR complete. Size: {original_size:,} → {final_size:,} bytes ({reduction:.1f}% reduction)")
+            report_data['ocr'].append({'file': pdf.name, 'status': 'OK'})
+        else:
+            print(f"  [FAIL] All OCR attempts failed for {pdf.name}, trying direct copy...")
+            try:
+                shutil.copy2(str(pdf), str(output_path))
+                print(f"  [OK] Copied as-is: {output_path.name}")
+                report_data['ocr'].append({'file': pdf.name, 'status': 'COPIED'})
+            except Exception as e:
+                print(f"  [FAIL] Could not process {pdf.name}: {e}")
+                report_data['ocr'].append({'file': pdf.name, 'status': 'FAILED'})
+
+    print(f"\n[OK] Processed {len(pdf_files)} PDFs")
+    success_count = len([r for r in report_data['ocr'] if r.get('status') in ['OK', 'COPIED']])
+    if skipped_count > 0:
+        print(f"[INFO] Skipped {skipped_count} already processed files")
+    print(f"[OK] Successfully processed: {success_count}/{len(pdf_files)} files")
+    
+    # Sync OCR directory to GCS
+    sync_all_directories_to_gcs(root_dir)
+
+# === GCS HELPER FUNCTIONS ===
+def sync_directory_to_gcs(local_dir, gcs_prefix, make_public=False, mirror=False):
+    """Sync local directory to GCS bucket.
+
+    - Always uploads and overwrites existing remote objects for matching files
+    - When mirror=True, deletes remote objects that do not exist locally
+    - Optionally makes uploaded objects public (make_public=True)
+    """
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET)
+        
+        local_path = Path(local_dir)
+        uploaded_files = []
+        local_files_set = set()
+        
+        for file_path in local_path.rglob('*'):
+            if file_path.is_file() and not file_path.name.startswith('.') and not file_path.name.startswith('_'):
+                # Calculate relative path for GCS
+                relative_path = file_path.relative_to(local_path)
+                gcs_path = f"{gcs_prefix}/{relative_path}".replace('\\', '/')
+                local_files_set.add(gcs_path)
+                
+                # Upload to GCS (overwrite if exists)
+                blob = bucket.blob(gcs_path)
+                blob.upload_from_filename(str(file_path))
+                
+                # Make public if requested
+                if make_public:
+                    blob.make_public()
+                    public_url = f"https://storage.googleapis.com/{GCS_BUCKET}/{gcs_path}"
+                    uploaded_files.append((str(file_path), public_url))
+                    print(f"  [PUBLIC] {file_path.name}")
+                else:
+                    uploaded_files.append((str(file_path), None))
+                    print(f"  [UPLOAD] {file_path.name}")
+        
+        # Mirror: delete remote objects that no longer exist locally
+        if mirror:
+            try:
+                to_delete = []
+                for blob in storage_client.list_blobs(GCS_BUCKET, prefix=gcs_prefix + '/'):
+                    if blob.name not in local_files_set:
+                        to_delete.append(blob)
+                for blob in to_delete:
+                    blob.delete()
+                    print(f"  [DELETE] {blob.name}")
+            except Exception as e_del:
+                print(f"  [WARN] Mirror delete failed: {e_del}")
+
+        return uploaded_files
+    except Exception as e:
+        print(f"  [WARN] GCS sync failed: {e}")
+        return []
+
+def get_public_url_for_pdf(root_dir, pdf_filename):
+        """Get an authenticated URL for the OCR PDF suitable for browser access.
+
+        Returns the Cloud Console authenticated URL pattern so users with access
+        can open the file directly in the browser (login required):
+            https://storage.cloud.google.com/<bucket>/<object>
+
+        Example:
+            https://storage.cloud.google.com/fremont-1/docs/<project>/<filename>.pdf
+
+        Note: Signed URLs remain available via generate_signed_url_for_pdf() if
+        time-limited anonymous access is needed.
+        """
+        project_name = root_dir.name
+        return f"https://storage.cloud.google.com/{GCS_BUCKET}/docs/{project_name}/{pdf_filename}"
+
+def generate_signed_url_for_pdf(root_dir, pdf_filename, expiration_hours=168):
+    """Generate a signed URL that expires after specified hours (default: 7 days)
+    
+    This provides temporary access without making files publicly readable.
+    Requires service account credentials with signing permissions.
+    """
+    from datetime import timedelta
+    
+    project_name = root_dir.name
+    
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET)
+        blob_name = f"docs/{project_name}/{pdf_filename}"
+        blob = bucket.blob(blob_name)
+        
+        # Generate signed URL that expires in X hours
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(hours=expiration_hours),
+            method="GET"
+        )
+        return url
+    except Exception as e:
+        print(f"  [WARN] Could not generate signed URL: {e}")
+        # Fallback to public URL
+        return f"https://storage.googleapis.com/{GCS_BUCKET}/docs/{project_name}/{pdf_filename}"
+
+def sync_all_directories_to_gcs(root_dir):
+    """Sync OCR PDFs to GCS (authentication required for access)"""
+    print("\n[GCS SYNC] Uploading directories to Google Cloud Storage...")
+    
+    project_name = root_dir.name
+    
+    # Sync OCR PDFs to /docs/ path (requires Google authentication to access)
+    local_dir = root_dir / "03_doc-ocr"
+    if local_dir.exists():
+        gcs_prefix = f"docs/{project_name}"
+        # Mirror deletes remote files that were removed locally. Overwrite on upload is default.
+        sync_directory_to_gcs(local_dir, gcs_prefix, make_public=False, mirror=True)
+    
+    print(f"[OK] GCS sync complete: gs://{GCS_BUCKET}/docs/{project_name}/")
+
+# === PHASE 4: EXTRACT - Google Vision OCR ===
+def phase4_extract(root_dir):
+    """Extract text from PDFs using Google Vision API only"""
+    print("\nPHASE 4: EXTRACT - GOOGLE VISION TEXT EXTRACTION")
+    print("-" * 80)
+    
+    # Ensure directory structure exists
+    ensure_directory_structure(root_dir)
+    
+    ocr_dir = root_dir / "03_doc-ocr"
+    txt_dir = root_dir / "04_doc-txt-1"
+    
+    pdf_files = [f for f in ocr_dir.glob("*_o.pdf") if not f.parent.name.startswith('_')]
+    # Optional filter: restrict to selected basenames
+    global SELECTED_BASENAMES
+    if SELECTED_BASENAMES:
+        pdf_files = [f for f in pdf_files if f.stem.endswith('_o') and f.stem[:-2] in SELECTED_BASENAMES]
+    
+    if not pdf_files:
+        print("[SKIP] No PDF files found in 03_doc-ocr")
+        return
+    
+    # Initialize Google Vision client
+    try:
+        client = vision.ImageAnnotatorClient()
+    except Exception as e:
+        print(f"[FAIL] Could not initialize Google Vision: {e}")
+        return
+    
+    skipped_count = 0
+    for pdf in pdf_files:
+        output_path = txt_dir / f"{pdf.stem}.txt"
+        
+        # Skip if output already exists
+        if output_path.exists():
+            print(f"[SKIP] Already extracted: {pdf.name}")
+            skipped_count += 1
+            continue
+        
+        print(f"Processing: {pdf.name}...")
+        
+        try:
+            # Read PDF
+            with open(pdf, 'rb') as f:
+                content = f.read()
+            
+            # Process in batches of 5 pages (API limit)
+            text_pages = []
+            page_num = 1
+            batch_size = 5
+            
+            # Prefer latest OCR model with English hint; fall back if needed
+            ocr_feature_primary = None
+            try:
+                # Newer SDKs support model selection
+                ocr_feature_primary = vision.Feature(
+                    type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION,
+                    model="builtin/latest"
+                )
+            except Exception:
+                ocr_feature_primary = vision.Feature(
+                    type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION
+                )
+
+            image_ctx = None
+            try:
+                image_ctx = vision.ImageContext(language_hints=['en'])
+            except Exception:
+                image_ctx = None
+
+            while True:
+                # Create request for next 5 pages
+                request = vision.AnnotateFileRequest(
+                    input_config=vision.InputConfig(
+                        content=content,
+                        mime_type='application/pdf'
+                    ),
+                    features=[ocr_feature_primary],
+                    pages=list(range(page_num, page_num + batch_size)),
+                    image_context=image_ctx
+                )
+                
+                # Process batch
+                try:
+                    response = client.batch_annotate_files(requests=[request])
+                    
+                    # Extract text from this batch
+                    batch_pages = []
+                    for file_response in response.responses:
+                        for page_response in file_response.responses:
+                            if page_response.full_text_annotation.text:
+                                batch_pages.append(page_response.full_text_annotation.text)
+                    
+                    if not batch_pages:
+                        # No more pages
+                        break
+                        
+                    text_pages.extend(batch_pages)
+                    page_num += batch_size
+                    print(f"  Processed {len(text_pages)} pages...")
+                    
+                except Exception as e:
+                    if "400" in str(e):
+                        # Reached end of document
+                        break
+                    raise
+            
+            # Fallback: if nothing extracted, try simpler TEXT_DETECTION once
+            if len(text_pages) == 0:
+                try:
+                    page_num = 1
+                    while True:
+                        ocr_feature_fallback = None
+                        try:
+                            ocr_feature_fallback = vision.Feature(
+                                type_=vision.Feature.Type.TEXT_DETECTION,
+                                model="builtin/latest"
+                            )
+                        except Exception:
+                            ocr_feature_fallback = vision.Feature(
+                                type_=vision.Feature.Type.TEXT_DETECTION
+                            )
+
+                        request_fb = vision.AnnotateFileRequest(
+                            input_config=vision.InputConfig(
+                                content=content,
+                                mime_type='application/pdf'
+                            ),
+                            features=[ocr_feature_fallback],
+                            pages=list(range(page_num, page_num + batch_size)),
+                            image_context=image_ctx
+                        )
+                        response_fb = client.batch_annotate_files(requests=[request_fb])
+                        batch_pages_fb = []
+                        for file_response in response_fb.responses:
+                            for page_response in file_response.responses:
+                                if page_response.full_text_annotation.text:
+                                    batch_pages_fb.append(page_response.full_text_annotation.text)
+                        if not batch_pages_fb:
+                            break
+                        text_pages.extend(batch_pages_fb)
+                        page_num += batch_size
+                        print(f"  [FB] Processed {len(text_pages)} pages...")
+                except Exception as e_fb:
+                    print(f"  [WARN] Fallback TEXT_DETECTION failed: {e_fb}")
+
+            # Build document with header, content, and footer
+            base_name = pdf.stem[:-2]  # Remove _o suffix from PDF name
+            
+            # Get public URL for this PDF
+            public_url = get_public_url_for_pdf(root_dir, pdf.name)
+            
+            # Document header
+            header = f"""§§ DOCUMENT INFORMATION §§
+
+DOCUMENT NUMBER: TBD
+DOCUMENT NAME: {base_name}
+ORIGINAL PDF NAME: {pdf.name}
+PDF DIRECTORY: {str(pdf.absolute())}
+PDF PUBLIC URL: {public_url}
+TOTAL PAGES: {len(text_pages)}
+
+=====================================================================
+BEGINNING OF PROCESSED DOCUMENT
+=====================================================================
+
+"""
+            
+            # Document content with page markers
+            content_parts = []
+            for idx, page_text in enumerate(text_pages, 1):
+                # Add blank line before marker (except first page)
+                if idx > 1:
+                    content_parts.append(f"\n[BEGIN PDF Page {idx}]\n\n{page_text}\n")
+                else:
+                    content_parts.append(f"[BEGIN PDF Page {idx}]\n\n{page_text}\n")
+            
+            content = "".join(content_parts)
+            
+            # Document footer
+            footer = f"""
+=====================================================================
+END OF PROCESSED DOCUMENT
+=====================================================================
+"""
+            
+            # Combine all parts
+            final_text = header + content + footer
+            
+            # Save extracted text with template
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(final_text)
+            
+            print(f"  [OK] {output_path.name} ({len(text_pages)} pages)")
+            report_data['extract'].append({
+                'file': pdf.name,
+                'pages': len(text_pages),
+                'chars': sum(len(p) for p in text_pages),
+                'status': 'OK'
+            })
+            
+        except Exception as e:
+            print(f"  [FAIL] Google Vision error: {e}")
+            report_data['extract'].append({'file': pdf.name, 'status': 'FAILED', 'error': str(e)})
+    
+    success_count = len([r for r in report_data['extract'] if r.get('status') == 'OK'])
+    print(f"\n[OK] Extracted {success_count}/{len(pdf_files)} files")
+    if skipped_count > 0:
+        print(f"[INFO] Skipped {skipped_count} already extracted files")
+
+# === PHASE 5: FORMAT - AI Text Cleaning ===
+def phase5_format(root_dir):
+    """Clean and format text files using Gemini (exact v22 prompt)"""
+    print("\nPHASE 5: FORMAT - AI TEXT CLEANING")
+    print("-" * 80)
+    
+    # Ensure directory structure exists
+    ensure_directory_structure(root_dir)
+    
+    txt_dir = root_dir / "04_doc-txt-1"
+    formatted_dir = root_dir / "05_doc-txt-2"
+    
+    # Archive old files
+    old_dir = formatted_dir / "_old"
+    if formatted_dir.exists():
+        existing_files = list(formatted_dir.glob("*_v30.txt"))
+        if existing_files:
+            old_dir.mkdir(exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            for old_file in existing_files:
+                archive_name = f"{old_file.stem}_{timestamp}.txt"
+                shutil.move(str(old_file), str(old_dir / archive_name))
+            print(f"[OK] Archived {len(existing_files)} old files to _old/")
+    
+    txt_files = [f for f in txt_dir.glob("*_o.txt") if not f.parent.name.startswith('_')]
+    # Optional filter: restrict to selected basenames
+    global SELECTED_BASENAMES
+    if SELECTED_BASENAMES:
+        txt_files = [f for f in txt_files if f.stem.endswith('_o') and f.stem[:-2] in SELECTED_BASENAMES]
+    
+    if not txt_files:
+        print("[SKIP] No text files found in 04_doc-txt-1")
+        return
+    
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(MODEL_NAME)
+    
+    # v22 exact prompt - DO NOT MODIFY
+    prompt = "You are correcting OCR output for a legal document. Your task is to fix OCR errors, preserve legal terminology, format page markers as [BEGIN PDF Page N], and ensure the document is court-ready with lines under 65 characters and proper paragraph breaks. Return only the corrected text."
+
+    skipped_count = 0
+
+    for txt_file in txt_files:
+        base_name = txt_file.stem[:-2]  # Remove _o
+        output_path = formatted_dir / f"{base_name}_v30.txt"
+        
+        # Skip if output already exists
+        if output_path.exists():
+            print(f"[SKIP] Already formatted: {txt_file.name}")
+            skipped_count += 1
+            continue
+        
+        print(f"Processing: {txt_file.name} → {output_path.name}")
+        
+        try:
+            # Read input text (already has header/footer from Phase 4)
+            with open(txt_file, 'r', encoding='utf-8') as f:
+                raw_text = f.read()
+            
+            # Extract only the document content (between header and footer)
+            # Keep header and footer intact, only format the middle section
+            if "BEGINNING OF PROCESSED DOCUMENT" in raw_text and "END OF PROCESSED DOCUMENT" in raw_text:
+                # Split into header, content, footer
+                parts = raw_text.split("BEGINNING OF PROCESSED DOCUMENT")
+                header_section = parts[0] + "BEGINNING OF PROCESSED DOCUMENT"
+                
+                remaining = parts[1].split("END OF PROCESSED DOCUMENT")
+                content_section = remaining[0]
+                footer_section = "END OF PROCESSED DOCUMENT" + remaining[1]
+                
+                # Send only content to Gemini with v22 prompt
+                response = model.generate_content(
+                    prompt + "\n\n" + content_section,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.1,
+                        max_output_tokens=MAX_OUTPUT_TOKENS
+                    )
+                )
+                cleaned_content = response.text
+                
+                # Reassemble with original header and footer
+                final_text = header_section + "\n" + cleaned_content + "\n" + footer_section
+            else:
+                # Fallback: format entire document if header/footer not found
+                response = model.generate_content(
+                    prompt + "\n\n" + raw_text,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.1,
+                        max_output_tokens=MAX_OUTPUT_TOKENS
+                    )
+                )
+                final_text = response.text
+            
+            # Save formatted text with explicit UTF-8 encoding
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(final_text)
+            
+            print(f"  [OK] Cleaned and formatted")
+            report_data['format'].append({
+                'file': txt_file.name,
+                'chars_in': len(raw_text),
+                'chars_out': len(final_text),
+                'status': 'OK'
+            })
+            
+        except Exception as e:
+            print(f"  [FAIL] Gemini formatting error: {e}")
+            report_data['format'].append({'file': txt_file.name, 'status': 'FAILED', 'error': str(e)})
+    
+    success_count = len([r for r in report_data['format'] if r.get('status') == 'OK'])
+    print(f"\n[OK] Formatted {success_count}/{len(txt_files)} files")
+    if skipped_count > 0:
+        print(f"[INFO] Skipped {skipped_count} already formatted files")
+
+# === PHASE 6: VERIFY - Deep comparison ===
+def phase6_verify(root_dir):
+    """Compare formatted text to original PDFs and generate verification report"""
+    print("\nPHASE 6: VERIFY - ACCURACY CHECK")
+    print("-" * 80)
+    
+    # Ensure directory structure exists
+    ensure_directory_structure(root_dir)
+    
+    ocr_dir = root_dir / "03_doc-ocr"
+    formatted_dir = root_dir / "05_doc-txt-2"
+    
+    txt_files = list(formatted_dir.glob("*_v30.txt"))
+    # Optional filter: restrict to selected basenames
+    global SELECTED_BASENAMES
+    if SELECTED_BASENAMES:
+        txt_files = [f for f in txt_files if f.stem.endswith('_v30') and f.stem[:-4] in SELECTED_BASENAMES]
+    
+    if not txt_files:
+        print("[SKIP] No formatted files to verify")
+        return
+    
+    verification_results = []
+    manifest_rows = []
+    
+    for txt_file in txt_files:
+        # Find corresponding PDF
+        base_name = txt_file.stem[:-4]  # Remove _v30
+        pdf_file = ocr_dir / f"{base_name}_o.pdf"
+        
+        if not pdf_file.exists():
+            print(f"[WARN] PDF not found for {txt_file.name}")
+            continue
+        
+        print(f"Verifying: {txt_file.name}")
+        
+        try:
+            # Read formatted text
+            with open(txt_file, 'r', encoding='utf-8') as f:
+                formatted_text = f.read()
+            
+            # Count pages in formatted text (look for bracketed markers)
+            formatted_pages = formatted_text.count('[BEGIN PDF Page ')
+            
+            # Get PDF page count
+            doc = fitz.open(pdf_file)
+            pdf_pages = len(doc)
+            doc.close()
+
+            # File sizes and reduction metrics
+            pdf_size_bytes = pdf_file.stat().st_size
+            pdf_size_mb = pdf_size_bytes / (1024 * 1024)
+            original_pdf = root_dir / "02_doc-renamed" / f"{base_name}_r.pdf"
+            reduction_pct = None
+            if original_pdf.exists():
+                try:
+                    orig_size_bytes = original_pdf.stat().st_size
+                    if orig_size_bytes > 0:
+                        reduction_pct = ((orig_size_bytes - pdf_size_bytes) / orig_size_bytes) * 100.0
+                except Exception:
+                    reduction_pct = None
+            
+            # GCS URL for this PDF
+            gcs_url = get_public_url_for_pdf(root_dir, pdf_file.name)
+            
+            # Get character counts
+            formatted_chars = len(formatted_text)
+            
+            # Check for issues
+            issues = []
+            if formatted_pages == 0:
+                issues.append("No page markers found")
+            elif abs(formatted_pages - pdf_pages) > 2:
+                issues.append(f"Page count mismatch: PDF has {pdf_pages}, markers found {formatted_pages}")
+            
+            if formatted_chars < 1000:
+                issues.append("Text length unusually short")
+            
+            if issues:
+                print(f"  [WARN] Deviations found:")
+                for issue in issues:
+                    print(f"    - {issue}")
+                status = 'WARNING'
+            else:
+                print(f"  [OK] Verified: {pdf_pages} pages, {formatted_chars:,} chars")
+                status = 'OK'
+            
+            verification_results.append({
+                'file': txt_file.name,
+                'pdf_pages': pdf_pages,
+                'formatted_pages': formatted_pages,
+                'chars': formatted_chars,
+                'status': status,
+                'issues': issues
+            })
+
+            # Add to manifest rows
+            manifest_rows.append({
+                'file': pdf_file.name,
+                'gcs_url': gcs_url,
+                'local_path': str(pdf_file),
+                'bytes': pdf_size_bytes,
+                'mb': round(pdf_size_mb, 3),
+                'pdf_pages': pdf_pages,
+                'formatted_pages': formatted_pages,
+                'status': status,
+                'issues': "; ".join(issues) if issues else "",
+                'reduction_pct': round(reduction_pct, 2) if reduction_pct is not None else ''
+            })
+            
+        except Exception as e:
+            print(f"  [FAIL] Verification error: {e}")
+            verification_results.append({
+                'file': txt_file.name,
+                'status': 'FAILED',
+                'error': str(e)
+            })
+    
+    # Generate verification report
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    report_path = root_dir / f"VERIFICATION_REPORT_v30_{timestamp}.txt"
+    manifest_csv_path = root_dir / f"PDF_MANIFEST_v30_{timestamp}.csv"
+    
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write("="*80 + "\n")
+        f.write("DOCUMENT PROCESSING v30 - VERIFICATION REPORT\n")
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("="*80 + "\n\n")
+        
+        f.write("SUMMARY\n")
+        f.write("-"*80 + "\n")
+        total = len(verification_results)
+        ok_count = len([r for r in verification_results if r.get('status') == 'OK'])
+        warn_count = len([r for r in verification_results if r.get('status') == 'WARNING'])
+        fail_count = len([r for r in verification_results if r.get('status') == 'FAILED'])
+        
+        f.write(f"Total Files: {total}\n")
+        f.write(f"Verified OK: {ok_count}\n")
+        f.write(f"Warnings: {warn_count}\n")
+        f.write(f"Failed: {fail_count}\n\n")
+        
+        # PDF MANIFEST SECTION
+        f.write("PDF MANIFEST\n")
+        f.write("-"*80 + "\n")
+        f.write("File, Size (MB), Pages, Status, Reduction (%), GCS URL\n")
+        for row in manifest_rows:
+            size_str = f"{row['mb']:.3f}"
+            red_str = f"{row['reduction_pct']}" if row['reduction_pct'] != '' else ""
+            f.write(f"{row['file']}, {size_str}, {row['pdf_pages']}, {row['status']}, {red_str}, {row['gcs_url']}\n")
+
+        f.write("\nDETAILED RESULTS\n")
+        f.write("-"*80 + "\n")
+        
+        for result in verification_results:
+            f.write(f"\nFile: {result['file']}\n")
+            f.write(f"Status: {result.get('status', 'UNKNOWN')}\n")
+            if 'pdf_pages' in result:
+                f.write(f"PDF Pages: {result['pdf_pages']}\n")
+                f.write(f"Formatted Pages: {result['formatted_pages']}\n")
+                f.write(f"Characters: {result['chars']:,}\n")
+            if result.get('issues'):
+                f.write("Issues:\n")
+                for issue in result['issues']:
+                    f.write(f"  - {issue}\n")
+            if result.get('error'):
+                f.write(f"Error: {result['error']}\n")
+    
+    # Write CSV manifest
+    try:
+        with open(manifest_csv_path, 'w', encoding='utf-8', newline='') as csvfile:
+            fieldnames = ['file', 'gcs_url', 'local_path', 'bytes', 'mb', 'pdf_pages', 'formatted_pages', 'status', 'issues', 'reduction_pct']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(manifest_rows)
+        print(f"[OK] Manifest CSV saved: {manifest_csv_path.name}")
+    except Exception as e:
+        print(f"[WARN] Could not write manifest CSV: {e}")
+
+    print(f"\n[OK] Final report saved: {report_path.name}")
+    report_data['verify'] = verification_results
+
+# === INTERACTIVE MENU ===
+def interactive_menu():
+    """Interactive menu for user to select phases and verification mode"""
+    print("\n" + "="*80)
+    print("DOCUMENT PROCESSING v30 - INTERACTIVE MODE")
+    print("="*80 + "\n")
+    
+    # Question 1: Full or Individual phases
+    print("1. Do you want to run FULL pipeline or INDIVIDUAL phases?")
+    print("   [1] Full pipeline (all 6 phases)")
+    print("   [2] Individual phases (select which ones to run)")
+    
+    while True:
+        choice = input("\nEnter choice (1 or 2): ").strip()
+        if choice in ['1', '2']:
+            break
+        print("Invalid choice. Please enter 1 or 2.")
+    
+    if choice == '1':
+        phases = ['organize', 'rename', 'ocr', 'extract', 'format', 'verify']
+    else:
+        print("\n2. Select which phases to run (enter phase numbers separated by spaces):")
+        print("   [1] Organize    - Move PDFs to 01_doc-original")
+        print("   [2] Rename      - Add date prefix, clean filenames")
+        print("   [3] OCR         - PDF enhancement (600 DPI, PDF/A)")
+        print("   [4] Extract     - Text extraction with Google Vision")
+        print("   [5] Format      - AI-powered text formatting")
+        print("   [6] Verify      - Accuracy verification")
+        
+        while True:
+            phase_input = input("\nEnter phase numbers (e.g., '1 2 3' or '2 3'): ").strip()
+            phase_nums = phase_input.split()
+            if all(p in ['1', '2', '3', '4', '5', '6'] for p in phase_nums):
+                break
+            print("Invalid input. Please enter numbers 1-6 separated by spaces.")
+        
+        phase_map = {
+            '1': 'organize', '2': 'rename', '3': 'ocr',
+            '4': 'extract', '5': 'format', '6': 'verify'
+        }
+        phases = [phase_map[p] for p in phase_nums]
+    
+    # Question 2: Verification before each phase
+    print("\n3. Do you want to VERIFY before starting each phase?")
+    print("   [1] Yes - Ask for confirmation before each phase")
+    print("   [2] No  - Run without verification")
+    
+    while True:
+        verify_choice = input("\nEnter choice (1 or 2): ").strip()
+        if verify_choice in ['1', '2']:
+            break
+        print("Invalid choice. Please enter 1 or 2.")
+    
+    verify_before_phase = (verify_choice == '1')
+    
+    print("\n" + "="*80)
+    print(f"CONFIGURATION:")
+    print(f"  Phases to run: {', '.join(phases)}")
+    print(f"  Verification: {'Enabled' if verify_before_phase else 'Disabled'}")
+    print("="*80 + "\n")
+    
+    return phases, verify_before_phase
+
+def confirm_phase(phase_name):
+    """Ask user to confirm running a phase"""
+    phase_descriptions = {
+        'organize': 'Move PDFs to 01_doc-original with _o suffix',
+        'rename': 'Add date prefix and clean filenames',
+        'ocr': 'PDF enhancement (600 DPI, PDF/A)',
+        'extract': 'Text extraction with Google Vision API',
+        'format': 'AI-powered text formatting with Gemini',
+        'verify': 'Accuracy verification and reporting'
+    }
+    
+    print("\n" + "-"*80)
+    print(f"PHASE: {phase_name.upper()}")
+    print(f"Description: {phase_descriptions.get(phase_name, 'Unknown phase')}")
+    print("-"*80)
+    
+    while True:
+        choice = input("Commence this phase? [1] Yes  [2] Skip: ").strip()
+        if choice in ['1', '2']:
+            break
+        print("Invalid choice. Please enter 1 or 2.")
+    
+    return choice == '1'
+
+# === MAIN PIPELINE ===
+def main():
+    parser = argparse.ArgumentParser(description='Document Processing Pipeline v30')
+    parser.add_argument('--dir', type=str, help='Target directory to process')
+    parser.add_argument('--phase', nargs='+', choices=['organize', 'rename', 'ocr', 'extract', 'format', 'verify', 'all'],
+                       default=None, help='Phases to run (omit for interactive mode)')
+    parser.add_argument('--no-verify', action='store_true', help='Skip phase verification prompts')
+    parser.add_argument('--files', nargs='+', help='Specific PDF files to process (absolute or relative). Applies filter across phases.')
+    
+    args = parser.parse_args()
+    
+    if not args.dir:
+        print("Error: --dir parameter required")
+        print("Usage: python doc-process-v30.py --dir /path/to/directory [--phase organize rename ocr extract format verify]")
+        sys.exit(1)
+    
+    root_dir = Path(args.dir)
+    
+    if not root_dir.exists():
+        print(f"Error: Directory not found: {root_dir}")
+        sys.exit(1)
+    
+    # If specific files provided, organize them first and then build selection filter
+    global SELECTED_BASENAMES
+    if args.files:
+        original_dir = root_dir / "01_doc-original"
+        ensure_directory_structure(root_dir)  # Ensure pipeline directories exist
+        
+        processed_files_for_filter = []
+        for file_path_str in args.files:
+            file_path = Path(file_path_str)
+            if not file_path.is_absolute():
+                file_path = (root_dir / file_path).resolve()
+
+            if not file_path.exists():
+                print(f"[WARN] Provided file not found, skipping: {file_path_str}")
+                continue
+
+            # If file is in the root project directory, organize it into the pipeline
+            if file_path.parent == root_dir:
+                print(f"[ORGANIZE] Moving single file to pipeline: {file_path.name}")
+                base_name = file_path.stem
+                for suffix in ['_a', '_r', '_t', '_c', '_v22', '_v30', '_o']:
+                    if base_name.endswith(suffix):
+                        base_name = base_name[:-len(suffix)]
+                        break
+                new_name = f"{base_name}_o.pdf"
+                target_path = original_dir / new_name
+
+                if not target_path.exists():
+                    shutil.move(str(file_path), str(target_path))
+                    processed_files_for_filter.append(target_path)
+                else:
+                    print(f"[SKIP] {new_name} already in organize directory.")
+                    processed_files_for_filter.append(target_path)
+            else:
+                # Assume file is already somewhere in the pipeline structure
+                processed_files_for_filter.append(file_path)
+        
+        # Build the selection filter from the final basenames of the provided files
+        selected = set()
+        for p in processed_files_for_filter:
+            name = p.stem
+            base = name
+            for suffix in ['_r', '_o', '_v30']: # Check for any pipeline suffix
+                if base.endswith(suffix):
+                    base = base[:-len(suffix)]
+                    break
+            selected.add(base)
+        
+        if selected:
+            SELECTED_BASENAMES = selected
+            print(f"[FILTER] Processing will be limited to: {', '.join(SELECTED_BASENAMES)}")
+
+    # Determine which phases to run and verification mode
+    if args.phase is None:
+        # Interactive mode - ask user
+        phases, verify_before_phase = interactive_menu()
+    else:
+        # Command-line mode
+        phases = args.phase
+        if 'all' in phases:
+            phases = ['organize', 'rename', 'ocr', 'extract', 'format', 'verify']
+        verify_before_phase = not args.no_verify
+    
+    # If specific files were provided, --no-verify is implied for a smoother single-file run
+    if args.files:
+        verify_before_phase = False
+        print("[INFO] Non-interactive mode enforced for single file processing.")
+
+    # Run preflight checks (skip OCR tools for extract/format/verify phases)
+    skip_ocr_check = all(p in ['extract', 'format', 'verify'] for p in phases)
+    if not preflight_checks(skip_ocr_check=skip_ocr_check):
+        sys.exit(1)
+    
+    # Execute phases with optional verification
+    phase_functions = {
+        'organize': phase1_organize,
+        'rename': phase2_rename,
+        'ocr': phase3_ocr,
+        'extract': phase4_extract,
+        'format': phase5_format,
+        'verify': phase6_verify
+    }
+    
+    # Decide on interactive error handling (if --no-verify supplied, do not prompt on errors)
+    interactive_on_error = not args.no_verify
+
+    for phase_name in phases:
+        if verify_before_phase:
+            if not confirm_phase(phase_name):
+                print(f"[SKIP] Skipping {phase_name} phase")
+                continue
+        
+        # Execute the phase with error handling
+        try:
+            print(f"\n[START] Beginning {phase_name} phase...")
+            phase_functions[phase_name](root_dir)
+            print(f"[DONE] Completed {phase_name} phase")
+        except KeyboardInterrupt:
+            print(f"\n[STOP] User cancelled {phase_name} phase")
+            if interactive_on_error:
+                user_choice = input("Continue to next phase? [1] Yes  [2] Stop entirely: ").strip()
+                if user_choice != '1':
+                    print("[STOP] Pipeline stopped by user")
+                    break
+            else:
+                print("[CONTINUE] Non-interactive mode: proceeding to next phase...")
+        except Exception as e:
+            print(f"\n[ERROR] Phase {phase_name} failed with error: {e}")
+            print(f"[ERROR] Traceback: {e.__class__.__name__}")
+            if interactive_on_error:
+                user_choice = input("Continue to next phase? [1] Yes  [2] Stop entirely: ").strip()
+                if user_choice != '1':
+                    print("[STOP] Pipeline stopped due to error")
+                    break
+                print(f"[CONTINUE] Moving to next phase...")
+            else:
+                print(f"[CONTINUE] Non-interactive mode: moving to next phase...")
+    
+    print("\n" + "="*80)
+    print("[OK] Processing complete")
+    print("="*80 + "\n")
+
+if __name__ == "__main__":
+    main()
