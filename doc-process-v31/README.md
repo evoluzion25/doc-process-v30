@@ -8,6 +8,11 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## What's New in v31
 
+### Phase 2 Rename Enhancements (November 2025)
+- **Smart date detection**: Skips adding date prefix if filename already starts with YYYYMMDD format
+- **Google Sheets removal**: Automatically removes "Google Sheets" text from filenames
+- Prevents duplicate date prefixes on files that already have proper naming
+
 ### Phase 1 Suffix Fix (November 2025)
 - **Fixed**: Phase 1 now properly strips `_o` suffix and adds `_d` suffix
 - Previously files with `_o` kept their suffix unchanged, causing Phase 2 to skip files
