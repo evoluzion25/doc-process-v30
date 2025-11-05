@@ -1513,12 +1513,14 @@ def phase6_verify(root_dir):
 
 # === PHASE 7: GCS UPLOAD ===
 def phase7_gcs_upload(root_dir):
-    """Upload cleaned PDFs to GCS and insert URLs into converted text files.
+    """Upload cleaned PDFs to GCS and insert URLs into text files.
     
     This phase:
-    1. Uploads all *_o.pdf files from 03_doc-clean to GCS
-    2. Generates public URLs for each uploaded PDF
-    3. Prepends the GCS URL to the corresponding *_c.txt file in 04_doc-convert
+    1. Identifies the full directory path relative to workspace
+    2. Uploads all *_o.pdf files from 03_doc-clean to GCS with full path
+    3. Generates public URLs for each uploaded PDF
+    4. Updates headers in 04_doc-convert/*_c.txt files with PDF Directory and PDF Public Link
+    5. Updates headers in 05_doc-format/*_v31.txt files with PDF Directory and PDF Public Link
     """
     print("\n" + "="*80)
     print("PHASE 7: GCS UPLOAD & URL INSERTION")
@@ -1526,18 +1528,23 @@ def phase7_gcs_upload(root_dir):
     
     clean_dir = root_dir / '03_doc-clean'
     convert_dir = root_dir / '04_doc-convert'
+    format_dir = root_dir / '05_doc-format'
     
     if not clean_dir.exists():
         print(f"[SKIP] Clean directory not found: {clean_dir}")
         return
     
-    if not convert_dir.exists():
-        print(f"[SKIP] Convert directory not found: {convert_dir}")
-        return
+    # Get full directory path relative to E:\ drive
+    # Example: E:\01_prjct_active\02_legal_system_v1.2\x_docs\01_fremont\15_coa
+    # Result: 01_prjct_active/02_legal_system_v1.2/x_docs/01_fremont/15_coa
+    full_path = str(root_dir).replace('\\', '/')
+    if full_path.startswith('E:/'):
+        full_path = full_path[3:]  # Remove 'E:/'
+    elif full_path.startswith('e:/'):
+        full_path = full_path[3:]  # Remove 'e:/'
     
-    # Get project name from root directory
-    project_name = root_dir.name
-    gcs_prefix = f"docs/{project_name}"
+    gcs_prefix = f"docs/{full_path}"
+    pdf_directory = full_path
     
     pdf_files = sorted(clean_dir.glob('*_o.pdf'))
     if not pdf_files:
@@ -1545,6 +1552,7 @@ def phase7_gcs_upload(root_dir):
         return
     
     print(f"[INFO] Found {len(pdf_files)} PDFs to upload")
+    print(f"[INFO] PDF Directory: {pdf_directory}")
     print(f"[INFO] GCS destination: gs://{GCS_BUCKET}/{gcs_prefix}/")
     
     try:
@@ -1552,11 +1560,12 @@ def phase7_gcs_upload(root_dir):
         bucket = storage_client.bucket(GCS_BUCKET)
         
         uploaded_count = 0
-        url_inserted_count = 0
+        convert_updated_count = 0
+        format_updated_count = 0
         
         for pdf_path in pdf_files:
             try:
-                # Generate URL without re-uploading (files already uploaded)
+                # Upload to GCS with full directory path
                 blob_name = f"{gcs_prefix}/{pdf_path.name}"
                 blob = bucket.blob(blob_name)
                 
@@ -1574,33 +1583,81 @@ def phase7_gcs_upload(root_dir):
                     uploaded_count += 1
                     print(f"[OK] Uploaded: {gcs_url}")
                 
-                # Find corresponding _c.txt file
-                base_name = pdf_path.stem.replace('_o', '')
-                txt_file = convert_dir / f"{base_name}_c.txt"
+                # Find corresponding files (remove only suffix _o, not all occurrences)
+                base_name = pdf_path.stem
+                if base_name.endswith('_o'):
+                    base_name = base_name[:-2]  # Remove last 2 chars (_o)
+                convert_file = convert_dir / f"{base_name}_c.txt" if convert_dir.exists() else None
+                format_file = format_dir / f"{base_name}_v31.txt" if format_dir.exists() else None
                 
-                if txt_file.exists():
-                    # Read current content
-                    with open(txt_file, 'r', encoding='utf-8') as f:
+                # Update 04_doc-convert/*_c.txt header
+                if convert_file and convert_file.exists():
+                    with open(convert_file, 'r', encoding='utf-8') as f:
                         content = f.read()
                     
-                    # Prepend URL header
-                    updated_content = f"PDF URL: {gcs_url}\n\n{content}"
+                    # Create header
+                    header = f"PDF Directory: {pdf_directory}\nPDF Public Link: {gcs_url}\n\n"
                     
-                    # Write back
-                    with open(txt_file, 'w', encoding='utf-8') as f:
-                        f.write(updated_content)
+                    # Remove old header if exists (backward compatibility)
+                    if content.startswith("PDF URL:"):
+                        content = content.split('\n', 1)[1].lstrip('\n')
+                    elif content.startswith("PDF Directory:"):
+                        # Remove old header completely
+                        lines = content.split('\n')
+                        content_start = 0
+                        for i, line in enumerate(lines):
+                            if not line.startswith("PDF") and line.strip():
+                                content_start = i
+                                break
+                        content = '\n'.join(lines[content_start:])
                     
-                    url_inserted_count += 1
-                    print(f"[OK] URL inserted into: {txt_file.name}")
-                else:
-                    print(f"[WARN] No matching text file found: {txt_file.name}")
+                    # Write updated content
+                    with open(convert_file, 'w', encoding='utf-8') as f:
+                        f.write(header + content)
+                    
+                    convert_updated_count += 1
+                    print(f"[OK] Updated header in: {convert_file.name}")
+                
+                # Update 05_doc-format/*_v31.txt header
+                if format_file and format_file.exists():
+                    with open(format_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Create header
+                    header = f"PDF Directory: {pdf_directory}\nPDF Public Link: {gcs_url}\n\n"
+                    
+                    # Remove old header if exists (backward compatibility)
+                    if content.startswith("PDF URL:"):
+                        content = content.split('\n', 1)[1].lstrip('\n')
+                    elif content.startswith("PDF Directory:"):
+                        # Remove old header completely
+                        lines = content.split('\n')
+                        content_start = 0
+                        for i, line in enumerate(lines):
+                            if not line.startswith("PDF") and line.strip():
+                                content_start = i
+                                break
+                        content = '\n'.join(lines[content_start:])
+                    
+                    # Write updated content
+                    with open(format_file, 'w', encoding='utf-8') as f:
+                        f.write(header + content)
+                    
+                    format_updated_count += 1
+                    print(f"[OK] Updated header in: {format_file.name}")
+                
+                if not convert_file or not convert_file.exists():
+                    print(f"[WARN] No convert file found: {base_name}_c.txt")
+                if not format_file or not format_file.exists():
+                    print(f"[WARN] No format file found: {base_name}_v31.txt")
                 
             except Exception as e:
                 print(f"[FAIL] Error processing {pdf_path.name}: {e}")
                 continue
         
         print(f"\n[SUMMARY] Uploaded {uploaded_count} PDFs to GCS")
-        print(f"[SUMMARY] Inserted URLs into {url_inserted_count} text files")
+        print(f"[SUMMARY] Updated {convert_updated_count} convert files (04_doc-convert)")
+        print(f"[SUMMARY] Updated {format_updated_count} format files (05_doc-format)")
         
     except Exception as e:
         print(f"[ERROR] GCS upload failed: {e}")
