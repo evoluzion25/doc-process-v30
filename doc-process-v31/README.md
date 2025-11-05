@@ -127,6 +127,7 @@ filename.pdf
 - **Output**: `03_doc-clean/`
 - **Suffix**: `_o`
 - **Tools**: PyMuPDF (metadata removal), ocrmypdf (600 DPI OCR), Ghostscript (compression)
+- **Parallel Processing**: Files <5MB processed in parallel; files ≥5MB processed sequentially to prevent subprocess deadlocks
 - **Action**: 
   1. Remove metadata
   2. OCR at 600 DPI → searchable PDF/A
