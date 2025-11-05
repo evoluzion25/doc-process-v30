@@ -18,15 +18,17 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 - Phase 7: **GCS Upload** - uploads PDFs to cloud storage and inserts URLs
 
 ### Optimized Clean/OCR Phase (Phase 3)
+
 1. **Remove metadata** first (PyMuPDF)
-2. **OCR at 600 DPI** (ocrmypdf → searchable PDF/A)
+2. **OCR at 600 DPI** (ocrmypdf → searchable PDF/A) - **runs in parallel**
 3. **Compress** while maintaining searchability (Ghostscript /ebook)
 4. Result: Clean, searchable, compressed PDF
 
 ### Performance Improvements
-- **Parallel processing** for Phases 2-5 (3-5x faster on multi-file batches)
+
+- **Parallel processing** for Phases 2-6 (3-5x faster on multi-file batches)
 - **ThreadPoolExecutor** for API calls (Gemini, Google Vision)
-- **ProcessPoolExecutor** for CPU-bound OCR operations
+- **ProcessPoolExecutor** for CPU-bound OCR operations (Phase 3)
 - Configurable worker counts: 5 workers (I/O), 3 workers (CPU)
 
 ### Error Handling

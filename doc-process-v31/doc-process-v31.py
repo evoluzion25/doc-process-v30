@@ -25,6 +25,7 @@ import re
 import json
 import time
 import csv
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional, Dict, List
@@ -597,35 +598,72 @@ def phase3_clean(root_dir):
         print("[SKIP] No PDF files found in 02_doc-renamed")
         return
     
+    # Filter out already processed files
+    files_to_process = []
     skipped_count = 0
     for pdf in pdf_files:
         base_name = pdf.stem[:-2]  # Remove _r
         output_path = clean_dir / f"{base_name}_o.pdf"
-        
-        # Skip if output already exists
         if output_path.exists():
             print(f"[SKIP] Already processed: {pdf.name}")
             skipped_count += 1
-            continue
+        else:
+            files_to_process.append(pdf)
+    
+    if not files_to_process:
+        print("[SKIP] All files already processed")
+        return
+    
+    print(f"[INFO] Processing {len(files_to_process)} PDFs with {MAX_WORKERS_CPU} workers...")
+    
+    # Process files in parallel
+    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS_CPU) as executor:
+        futures = {
+            executor.submit(_process_clean_pdf, pdf, clean_dir): pdf 
+            for pdf in files_to_process
+        }
         
-        print(f"Processing: {pdf.name} → {output_path.name}")
-        
+        for future in concurrent.futures.as_completed(futures):
+            pdf = futures[future]
+            try:
+                result = future.result()
+                if result.status in ['OK', 'PARTIAL', 'COPIED']:
+                    print(f"[OK] {result.file_name}")
+                    report_data['clean'].append({'file': pdf.name, 'status': result.status})
+                else:
+                    print(f"[FAIL] {result.file_name}: {result.error or 'Unknown error'}")
+                    report_data['clean'].append({'file': pdf.name, 'status': 'FAILED'})
+            except Exception as e:
+                print(f"[FAIL] {pdf.name}: {e}")
+                report_data['clean'].append({'file': pdf.name, 'status': 'FAILED'})
+    
+    print(f"\n[OK] Processed {len(files_to_process)} PDFs")
+    success_count = len([r for r in report_data['clean'] if r.get('status') in ['OK', 'PARTIAL', 'COPIED']])
+    if skipped_count > 0:
+        print(f"[INFO] Skipped {skipped_count} already processed files")
+    print(f"[OK] Successfully processed: {success_count}/{len(files_to_process)} files")
+
+def _process_clean_pdf(pdf_path, clean_dir):
+    """Process a single PDF for Phase 3 (Clean). Runs in parallel worker process."""
+    base_name = pdf_path.stem[:-2]  # Remove _r
+    output_path = clean_dir / f"{base_name}_o.pdf"
+    
+    try:
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\.venv\\Scripts\\ocrmypdf.exe'
         
         # Try ocrmypdf first
         cmd = [ocrmypdf_cmd, '--redo-ocr', '--output-type', 'pdfa', 
-               '--oversample', '600', str(pdf), str(output_path)]
+               '--oversample', '600', str(pdf_path), str(output_path)]
         success, out = run_subprocess(cmd)
         
         if not success:
             # Fallback to Ghostscript + ocrmypdf
-            print("  [WARN] Standard OCR failed. Using Ghostscript fallback...")
             temp_pdf = clean_dir / f"{base_name}_temp.pdf"
             
             try:
                 gs_cmd = ['gswin64c', '-sDEVICE=pdfimage32', '-o', 
-                         str(temp_pdf), str(pdf)]
+                         str(temp_pdf), str(pdf_path)]
                 gs_success, _ = run_subprocess(gs_cmd)
                 
                 if gs_success and temp_pdf.exists():
@@ -634,13 +672,11 @@ def phase3_clean(root_dir):
                     if temp_pdf.exists():
                         temp_pdf.unlink()
                 else:
-                    print(f"  [WARN] Ghostscript fallback failed, trying direct copy...")
-                    # Last resort: just copy the file with _t suffix
-                    shutil.copy2(str(pdf), str(output_path))
+                    # Last resort: just copy the file
+                    shutil.copy2(str(pdf_path), str(output_path))
                     success = True
             except Exception as e:
-                print(f"  [WARN] Fallback error: {e}, copying file as-is...")
-                shutil.copy2(str(pdf), str(output_path))
+                shutil.copy2(str(pdf_path), str(output_path))
                 success = True
         
         if success or output_path.exists():
@@ -656,7 +692,6 @@ def phase3_clean(root_dir):
                 temp_clean.replace(output_path)
                 
                 # Optional: Compress PDF to reduce file size while maintaining searchability
-                # This uses Ghostscript's /ebook setting (150dpi images, preserves OCR text layer)
                 original_size = output_path.stat().st_size
                 compressed_path = clean_dir / f"{base_name}_compressed_temp.pdf"
                 
@@ -674,37 +709,33 @@ def phase3_clean(root_dir):
                     # Only use compressed version if it's significantly smaller (>10% reduction)
                     if reduction > 10:
                         compressed_path.replace(output_path)
-                        print(f"  [OK] Compressed: {original_size:,} → {compressed_size:,} bytes ({reduction:.1f}% reduction)")
+                        return ProcessingResult(
+                            file_name=output_path.name,
+                            status='OK',
+                            metadata={'compression': f"{original_size:,} → {compressed_size:,} bytes ({reduction:.1f}% reduction)"}
+                        )
                     else:
-                        compressed_path.unlink()  # Remove compressed version, keep original
-                        print(f"  [OK] Created and cleaned: {output_path.name}")
+                        if compressed_path.exists():
+                            compressed_path.unlink()
+                        return ProcessingResult(file_name=output_path.name, status='OK')
                 else:
-                    print(f"  [OK] Created and cleaned: {output_path.name}")
+                    return ProcessingResult(file_name=output_path.name, status='OK')
                 
-                report_data['clean'].append({'file': pdf.name, 'status': 'OK'})
             except Exception as e:
-                print(f"  [WARN] Metadata cleanup failed: {e}")
                 if output_path.exists():
-                    print(f"  [OK] File saved (partial): {output_path.name}")
-                    report_data['clean'].append({'file': pdf.name, 'status': 'PARTIAL'})
+                    return ProcessingResult(file_name=output_path.name, status='PARTIAL', error=f"Metadata cleanup failed: {e}")
                 else:
-                    print(f"  [FAIL] No output file created for {pdf.name}")
-                    report_data['clean'].append({'file': pdf.name, 'status': 'FAILED'})
+                    return ProcessingResult(file_name=pdf_path.name, status='FAILED', error=f"No output file created: {e}")
         else:
-            print(f"  [FAIL] OCR failed for {pdf.name}, trying direct copy...")
+            # OCR failed, try direct copy
             try:
-                shutil.copy2(str(pdf), str(output_path))
-                print(f"  [OK] Copied as-is: {output_path.name}")
-                report_data['clean'].append({'file': pdf.name, 'status': 'COPIED'})
+                shutil.copy2(str(pdf_path), str(output_path))
+                return ProcessingResult(file_name=output_path.name, status='COPIED')
             except Exception as e:
-                print(f"  [FAIL] Could not process {pdf.name}: {e}")
-                report_data['clean'].append({'file': pdf.name, 'status': 'FAILED'})
+                return ProcessingResult(file_name=pdf_path.name, status='FAILED', error=str(e))
     
-    print(f"\n[OK] Processed {len(pdf_files)} PDFs")
-    success_count = len([r for r in report_data['clean'] if r.get('status') in ['OK', 'PARTIAL', 'COPIED']])
-    if skipped_count > 0:
-        print(f"[INFO] Skipped {skipped_count} already processed files")
-    print(f"[OK] Successfully processed: {success_count}/{len(pdf_files)} files")
+    except Exception as e:
+        return ProcessingResult(file_name=pdf_path.name, status='FAILED', error=str(e))
 
 # === GCS HELPER FUNCTIONS ===
 def sync_directory_to_gcs(local_dir, gcs_prefix, make_public=False, mirror=False):
