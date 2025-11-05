@@ -8,6 +8,21 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## What's New in v31
 
+### Chunked Processing for Large Documents (November 2025)
+- **Automatic chunking** for documents >80 pages
+- Splits large documents into 80-page segments for Gemini processing
+- Consolidates chunks seamlessly with proper formatting
+- Overcomes Gemini's 65536 output token limit
+- Successfully tested on 171-page documents (3 chunks)
+- Each chunk maintains page markers and formatting integrity
+
+### Auto-Continue After 30 Seconds (November 2025)
+- **Phase prompts** auto-continue after 30 seconds if no input
+- **Error/cancel handlers** auto-continue to next phase by default
+- Manual override available within timeout window
+- Enables unattended pipeline execution
+- Default behavior: continue to next phase (option 1)
+
 ### Phase 5 v21 Architecture (November 2025)
 - **Architectural Change**: Phase 5 now matches v21's proven approach
   - Phase 4 creates complete template (header + body + footer)
@@ -200,6 +215,11 @@ END OF PROCESSED DOCUMENT
   1. **Extract** header, body, and footer from `_c.txt` template
   2. **Process** only document body through Gemini (no template sent to AI)
   3. **Reassemble** cleaned body with original header/footer
+- **Chunking**: Documents >80 pages automatically split into segments
+  - Each chunk processed separately through Gemini
+  - Chunks consolidated with proper spacing (`\n\n` separator)
+  - Maintains page marker formatting across chunk boundaries
+  - Tested on 171-page documents (3 chunks of 80+80+11 pages)
 - **Action**: Fix OCR errors, remove scanning artifacts, preserve legal structure and page markers
 - **Critical Format**: Maintains `\n\n[BEGIN PDF Page N]\n\n` (two blank lines) around all page markers
 - **Prompt**: Uses exact v21 prompt for OCR correction without formatting preservation instructions

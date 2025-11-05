@@ -9,6 +9,8 @@ Major improvements in v31:
 - Dead-letter queue for failed files  
 - Per-file error handling (continues on failure)
 - Progress tracking and performance metrics
+- Auto-continue to next phase after 30 seconds
+- Chunked processing for large documents (>80 pages)
 """
 import fitz
 from pathlib import Path
@@ -29,6 +31,7 @@ import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional, Dict, List
+import threading
 
 # === CONFIGURATION ===
 # Load secrets from centralized file
@@ -103,6 +106,27 @@ report_data = {
 #     """Move failed files to _failed/<phase>/ for manual review"""
 #     # Disabled - no longer creating _failed directories
 #     pass
+
+# === TIMEOUT INPUT HELPER ===
+def input_with_timeout(prompt, timeout=30, default='1'):
+    """Get user input with timeout. Returns default if timeout expires."""
+    result = [default]
+    
+    def get_input():
+        try:
+            result[0] = input(prompt).strip()
+        except:
+            pass
+    
+    thread = threading.Thread(target=get_input, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    
+    if thread.is_alive():
+        print(f"\n[AUTO] No input received - auto-continuing in {timeout}s (default: {default})")
+        return default
+    
+    return result[0]
 
 # === PHASE 0: PRE-FLIGHT CHECKS ===
 def preflight_checks(skip_clean_check=False):
@@ -1098,8 +1122,44 @@ END OF PROCESSED DOCUMENT
     if skipped_count > 0:
         print(f"[INFO] Skipped {skipped_count} already converted files")
 
+def _chunk_body_by_pages(body_text, pages_per_chunk=80):
+    """Split body text into chunks by page markers for large documents"""
+    chunks = []
+    
+    # Find all page markers
+    page_pattern = r'\n\n\[BEGIN PDF Page \d+\]\n\n'
+    page_markers = list(re.finditer(page_pattern, body_text))
+    
+    if len(page_markers) <= pages_per_chunk:
+        # Document small enough, return as single chunk
+        return [body_text]
+    
+    # Split into chunks
+    for i in range(0, len(page_markers), pages_per_chunk):
+        chunk_markers = page_markers[i:i + pages_per_chunk]
+        
+        if i == 0:
+            # First chunk: from start to end of last page in chunk
+            start_pos = 0
+        else:
+            # Subsequent chunks: from start of first page marker
+            start_pos = chunk_markers[0].start()
+        
+        if i + pages_per_chunk >= len(page_markers):
+            # Last chunk: to end of document
+            end_pos = len(body_text)
+        else:
+            # Middle chunks: to start of next chunk's first page
+            end_pos = page_markers[i + pages_per_chunk].start()
+        
+        chunk = body_text[start_pos:end_pos].strip()
+        chunks.append(chunk)
+    
+    return chunks
+
+
 def _process_format_file(txt_file, formatted_dir, prompt):
-    """Worker function for parallel text formatting - matches v21 architecture"""
+    """Worker function for parallel text formatting - matches v21 architecture with chunking"""
     base_name = txt_file.stem[:-2]  # Remove _c suffix
     output_path = formatted_dir / f"{base_name}_v31.txt"
     
@@ -1130,20 +1190,43 @@ def _process_format_file(txt_file, formatted_dir, prompt):
         raw_body = full_text[body_start_content:footer_start].strip()
         footer = full_text[footer_start:]  # Includes the === line before END
         
-        # Send ONLY the body to Gemini (like v21)
-        response = model.generate_content(
-            prompt + "\n\n" + raw_body,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=MAX_OUTPUT_TOKENS
+        # Check if document needs chunking (count pages)
+        page_count = len(re.findall(r'\[BEGIN PDF Page \d+\]', raw_body))
+        
+        if page_count > 80:
+            # Large document - process in chunks
+            print(f"  [CHUNK] Document has {page_count} pages - processing in 80-page chunks...")
+            chunks = _chunk_body_by_pages(raw_body, pages_per_chunk=80)
+            cleaned_chunks = []
+            
+            for idx, chunk in enumerate(chunks, 1):
+                print(f"    Processing chunk {idx}/{len(chunks)}...")
+                response = model.generate_content(
+                    prompt + "\n\n" + chunk,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.1,
+                        max_output_tokens=MAX_OUTPUT_TOKENS
+                    )
+                )
+                cleaned_chunks.append(response.text.strip())
+            
+            # Consolidate chunks
+            cleaned_body = "\n\n".join(cleaned_chunks)
+            print(f"  [OK] Consolidated {len(chunks)} chunks into complete document")
+            
+        else:
+            # Small document - process in single call
+            response = model.generate_content(
+                prompt + "\n\n" + raw_body,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=MAX_OUTPUT_TOKENS
+                )
             )
-        )
+            cleaned_body = response.text.strip()
         
         # Reassemble: header + cleaned_body + footer (like v21)
         # CRITICAL: Ensure blank lines between sections
-        cleaned_body = response.text.strip()
-        
-        # Header already ends with blank lines from Phase 4, but ensure it
         if not header.endswith("\n\n"):
             header = header.rstrip() + "\n\n"
         
@@ -1157,7 +1240,7 @@ def _process_format_file(txt_file, formatted_dir, prompt):
         return ProcessingResult(
             file_name=output_path.name,
             status='OK',
-            metadata={'chars_in': len(raw_body), 'chars_out': len(cleaned_body)}
+            metadata={'chars_in': len(raw_body), 'chars_out': len(cleaned_body), 'pages': page_count}
         )
         
     except Exception as e:
@@ -1594,11 +1677,11 @@ def confirm_phase(phase_name):
     print(f"Description: {phase_descriptions.get(phase_name, 'Unknown phase')}")
     print("-"*80)
     
-    while True:
-        choice = input("Commence this phase? [1] Yes  [2] Skip: ").strip()
-        if choice in ['1', '2']:
-            break
+    choice = input_with_timeout("Commence this phase? [1] Yes  [2] Skip (auto-continue in 30s): ", timeout=30, default='1')
+    
+    while choice not in ['1', '2']:
         print("Invalid choice. Please enter 1 or 2.")
+        choice = input("Commence this phase? [1] Yes  [2] Skip: ").strip()
     
     return choice == '1'
 
@@ -1663,14 +1746,14 @@ def main():
             print(f"[DONE] Completed {phase_name} phase")
         except KeyboardInterrupt:
             print(f"\n[STOP] User cancelled {phase_name} phase")
-            user_choice = input("Continue to next phase? [1] Yes  [2] Stop entirely: ").strip()
+            user_choice = input_with_timeout("Continue to next phase? [1] Yes  [2] Stop (auto-continue in 30s): ", timeout=30, default='1')
             if user_choice != '1':
                 print("[STOP] Pipeline stopped by user")
                 break
         except Exception as e:
             print(f"\n[ERROR] Phase {phase_name} failed with error: {e}")
             print(f"[ERROR] Traceback: {e.__class__.__name__}")
-            user_choice = input("Continue to next phase? [1] Yes  [2] Stop entirely: ").strip()
+            user_choice = input_with_timeout("Continue to next phase? [1] Yes  [2] Stop (auto-continue in 30s): ", timeout=30, default='1')
             if user_choice != '1':
                 print("[STOP] Pipeline stopped due to error")
                 break
