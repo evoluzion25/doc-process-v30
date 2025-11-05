@@ -527,7 +527,10 @@ def phase2_rename(root_dir):
         print(f"Processing: {pdf.name}...")
         
         # Get original filename without _d suffix
-        original_base = pdf.stem[:-2]  # Remove "_o"
+        original_base = pdf.stem[:-2]  # Remove "_d"
+        
+        # Check if filename already starts with YYYYMMDD date (8 digits)
+        already_has_date = bool(re.match(r'^\d{8}_', original_base))
         
         # Check if compilation (contains "Ex." or "Exhibit")
         is_compilation = bool(re.search(r'\bEx\.\s*P\d+|\bExhibit\b', original_base, re.IGNORECASE))
@@ -537,6 +540,11 @@ def phase2_rename(root_dir):
             clean_base = clean_filename(original_base)
             new_name = f"RR_{clean_base}_r.pdf"
             print(f"  [COMPILATION] Using RR_ prefix")
+        elif already_has_date:
+            # Already has date prefix - just clean and add _r suffix
+            clean_base = clean_filename(original_base)
+            new_name = f"{clean_base}_r.pdf"
+            print(f"  [SKIP DATE] Already has date prefix")
         else:
             # Try to convert date from filename first
             date = convert_date_from_filename(original_base)
