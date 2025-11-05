@@ -484,6 +484,10 @@ def clean_filename(filename):
     # Remove email addresses in brackets like [kmgate@kalcounty.com]
     filename = re.sub(r'\[[\w\.\-]+@[\w\.\-]+\]', '', filename)
     
+    # Remove common application/platform names
+    filename = re.sub(r'\s*-\s*Google\s+Sheets\s*', '', filename, flags=re.IGNORECASE)
+    filename = re.sub(r'\s+Google\s+Sheets\s*', '', filename, flags=re.IGNORECASE)
+    
     # Clean up multiple spaces, dashes, and underscores
     filename = re.sub(r'\s*-\s*-\s*', '_', filename)  # Replace " - - " with single underscore
     filename = re.sub(r'\s{2,}', ' ', filename)  # Replace multiple spaces with single space
