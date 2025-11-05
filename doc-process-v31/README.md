@@ -8,6 +8,12 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## What's New in v31
 
+### Phase 1 Suffix Fix (November 2025)
+- **Fixed**: Phase 1 now properly strips `_o` suffix and adds `_d` suffix
+- Previously files with `_o` kept their suffix unchanged, causing Phase 2 to skip files
+- Now removes any existing suffix (`_o`, `_d`, `_r`, etc.) before adding `_d`
+- Ensures proper progression through all pipeline phases
+
 ### Chunked Processing for Large Documents (November 2025)
 - **Automatic chunking** for documents >80 pages
 - Splits large documents into 80-page segments for Gemini processing
