@@ -1329,7 +1329,14 @@ def phase5_format(root_dir):
     genai.configure(api_key=GEMINI_API_KEY)
     
     # v21 exact prompt - Gemini only sees document body, not template
-    prompt = "You are correcting OCR output for a legal document. Your task is to fix OCR errors, preserve legal terminology, format page markers EXACTLY as '\\n\\n[BEGIN PDF Page N]\\n\\n' with blank lines before and after, and ensure the document is court-ready with lines under 65 characters and proper paragraph breaks. Return only the corrected text."
+    prompt = """You are correcting OCR output for a legal document. Your task is to:
+1. Fix OCR errors and preserve legal terminology
+2. CRITICAL: Preserve ALL page markers EXACTLY as they appear: '[BEGIN PDF Page N]' with blank lines before and after
+3. NEVER remove or modify page markers, especially [BEGIN PDF Page 1] - it MUST be preserved
+4. Format with lines under 65 characters and proper paragraph breaks
+5. Return only the corrected text with ALL page markers intact
+
+IMPORTANT: The first page marker [BEGIN PDF Page 1] must appear at the start of the document body. Do not remove it."""
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS_IO) as executor:
         futures = {
@@ -1568,19 +1575,29 @@ def phase7_verify(root_dir):
                         break
             
             # Check for PDF Public Link header
+            pdf_link_in_header = None
             if not any(line.startswith("PDF Public Link:") for line in lines[:10]):
                 header_issues.append("Missing PDF Public Link header")
             else:
-                # Validate URL is public format
+                # Validate URL is public format and matches expected
                 for line in lines[:10]:
                     if line.startswith("PDF Public Link:"):
                         url = line.replace("PDF Public Link:", "").strip()
+                        pdf_link_in_header = url
                         if not url.startswith("https://storage.cloud.google.com/"):
                             header_issues.append(f"URL not in public format: {url}")
+                        # Verify URL matches the expected URL for this PDF
+                        expected_url = get_public_url_for_pdf(root_dir, pdf_file.name)
+                        if url != expected_url:
+                            header_issues.append(f"PDF link mismatch: header has '{url}', expected '{expected_url}'")
                         break
             
             # Count pages in formatted text (look for bracketed markers)
             formatted_pages = formatted_text.count('[BEGIN PDF Page ')
+            
+            # CRITICAL: Verify [BEGIN PDF Page 1] exists
+            if '[BEGIN PDF Page 1]' not in formatted_text:
+                header_issues.append("Missing [BEGIN PDF Page 1] marker - content may be incomplete")
             
             # Get PDF page count
             doc = fitz.open(pdf_file)
