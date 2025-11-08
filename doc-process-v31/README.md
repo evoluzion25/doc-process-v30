@@ -38,6 +38,11 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
   - Faster initial feedback on pipeline status
   - More predictable timing estimates (small files complete quickly)
   - Applied to all 7 phases for consistent behavior
+  - **Phase 3 Fix**: Small files processed in parallel FIRST, large files sequentially LAST
+    - Previous version processed large files first (defeating smallest-to-largest order)
+    - Now shows immediate progress on small files
+    - Large files (>5MB) still processed sequentially to prevent subprocess deadlocks
+    - Provides better UX with faster visible results
 - **Google Drive sync detection and auto-pause**: Automatically detects Google Team Drives
   - Detects real-time sync that slows processing by 3-10x
   - Uses psutil to detect Google Drive File Stream process
