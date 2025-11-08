@@ -117,20 +117,32 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 - Configurable thresholds for different hardware/network conditions
 
 ### Updated Phase Names & Suffixes
-- Phase 1: **Directory** (was "Organize") - `_d` suffix
-- Phase 2: **Rename** - `_r` suffix
-- Phase 3: **Clean** (was "OCR") - `_o` suffix (OCR'd PDF/A)
-- Phase 4: **Convert** (was "Extract") - `_c.txt` suffix
-- Phase 5: **Format** - `_v31.txt` suffix
-- Phase 6: **Verify** - report only
-- Phase 7: **GCS Upload** - uploads PDFs to cloud storage and inserts URLs
+- Phase 1: **Directory** (was "Organize") - `_d` suffix (original PDFs)
+- Phase 2: **Rename** - `_r` suffix (renamed with date prefix)
+- Phase 3: **Clean** (was "OCR") - `_o` suffix (cleaned metadata + OCR'd PDF/A)
+- Phase 4: **Convert** (was "Extract") - `_c.txt` suffix (extracted text)
+- Phase 5: **Format** - `_v31.txt` suffix (AI-cleaned text)
+- Phase 6: **GCS Upload** - uploads Phase 3 PDFs (`_o.pdf`) to cloud storage
+- Phase 7: **Verify** - validates all phases
 
 ### Optimized Clean/OCR Phase (Phase 3)
 
-1. **Remove metadata** first (PyMuPDF)
-2. **OCR at 600 DPI** (ocrmypdf → searchable PDF/A) - **runs in parallel**
-3. **Compress** while maintaining searchability (Ghostscript /ebook)
-4. Result: Clean, searchable, compressed PDF
+**Processing order** (sequential per file):
+1. **Clean metadata/annotations** FIRST (PyMuPDF):
+   - Remove all metadata
+   - Delete all annotations (highlights, comments, stamps)
+   - Remove bookmarks/outline
+   - Saves to temporary `_metadata_cleaned.pdf`
+2. **OCR at 600 DPI** (ocrmypdf on cleaned file):
+   - Produces searchable PDF/A format
+   - 600 DPI oversample for quality
+3. **Compress** (Ghostscript `/ebook` settings):
+   - Reduces file size for online access
+   - Maintains searchability and text layer
+   - Only keeps compressed version if >10% reduction
+4. **Cleanup**: Deletes temporary `_metadata_cleaned.pdf`
+
+**Parallelization**: Multiple files processed simultaneously (5 workers for small files, sequential for large >5MB files)
 
 ### Performance Improvements
 

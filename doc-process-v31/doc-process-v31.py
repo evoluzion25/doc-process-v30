@@ -705,6 +705,7 @@ def _process_clean_pdf(pdf_path, clean_dir):
     """Process a single PDF for Phase 3 (Clean). Runs in parallel worker process."""
     base_name = pdf_path.stem[:-2]  # Remove _r
     output_path = clean_dir / f"{base_name}_o.pdf"
+    temp_cleaned = None
     
     try:
         # STEP 1: Clean metadata, annotations, highlights, bookmarks FIRST
@@ -727,14 +728,16 @@ def _process_clean_pdf(pdf_path, clean_dir):
             doc.set_toc([])
             
             # Save cleaned PDF
-            doc.save(temp_cleaned, garbage=4, deflate=True, clean=True)
+            doc.save(str(temp_cleaned), garbage=4, deflate=True, clean=True)
             doc.close()
             
             # Use cleaned PDF as input for OCR
-            ocr_input = temp_cleaned
+            ocr_input = str(temp_cleaned)
         except Exception as e:
             print(f"[WARN] Metadata cleaning failed for {pdf_path.name}: {e}")
-            ocr_input = pdf_path  # Fallback to original
+            ocr_input = str(pdf_path)  # Fallback to original
+            if temp_cleaned and temp_cleaned.exists():
+                temp_cleaned.unlink()
             temp_cleaned = None
         
         # STEP 2: OCR the cleaned PDF
@@ -743,12 +746,8 @@ def _process_clean_pdf(pdf_path, clean_dir):
         
         # Try ocrmypdf
         cmd = [ocrmypdf_cmd, '--redo-ocr', '--output-type', 'pdfa', 
-               '--oversample', '600', str(ocr_input), str(output_path)]
+               '--oversample', '600', ocr_input, str(output_path)]
         success, out = run_subprocess(cmd)
-        
-        # Clean up temp metadata file
-        if temp_cleaned and temp_cleaned.exists():
-            temp_cleaned.unlink()
         
         if not success:
             # Fallback to Ghostscript + ocrmypdf
@@ -756,7 +755,7 @@ def _process_clean_pdf(pdf_path, clean_dir):
             
             try:
                 gs_cmd = ['gswin64c', '-sDEVICE=pdfimage32', '-o', 
-                         str(temp_pdf), str(ocr_input)]
+                         str(temp_pdf), ocr_input]
                 gs_success, _ = run_subprocess(gs_cmd)
                 
                 if gs_success and temp_pdf.exists():
@@ -766,13 +765,20 @@ def _process_clean_pdf(pdf_path, clean_dir):
                         temp_pdf.unlink()
                 else:
                     # Last resort: just copy the file
-                    shutil.copy2(str(ocr_input), str(output_path))
+                    shutil.copy2(ocr_input, str(output_path))
                     success = True
             except Exception as e:
-                shutil.copy2(str(ocr_input), str(output_path))
+                shutil.copy2(ocr_input, str(output_path))
                 success = True
         
-        # STEP 3: Compress PDF to reduce file size while maintaining searchability
+        # STEP 3: Clean up temp metadata file AFTER all OCR attempts
+        if temp_cleaned and temp_cleaned.exists():
+            try:
+                temp_cleaned.unlink()
+            except Exception:
+                pass  # Ignore cleanup errors
+        
+        # STEP 4: Compress PDF to reduce file size while maintaining searchability
         if success or output_path.exists():
             try:
                 original_size = output_path.stat().st_size
@@ -819,6 +825,13 @@ def _process_clean_pdf(pdf_path, clean_dir):
     
     except Exception as e:
         return ProcessingResult(file_name=pdf_path.name, status='FAILED', error=str(e))
+    finally:
+        # Always cleanup temp metadata file
+        if temp_cleaned and temp_cleaned.exists():
+            try:
+                temp_cleaned.unlink()
+            except Exception:
+                pass
 
 # === GCS HELPER FUNCTIONS ===
 def sync_directory_to_gcs(local_dir, gcs_prefix, make_public=False, mirror=False):
