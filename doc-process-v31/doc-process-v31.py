@@ -940,19 +940,16 @@ def _process_clean_pdf(pdf_path, clean_dir):
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
 
-        # Use --force-ocr with sandwich renderer for reliable text layer on ALL pages
-        # --skip-text 0.0 forces OCR even on pages with existing text
-        # --rotate-pages auto-corrects page orientation
-        # --image-dpi provides consistent rendering for header areas
-        # --tesseract-pagesegmode 3 uses automatic page segmentation (recommended)
-        cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa-2',
-               '--oversample', '600', '--optimize', '1',
-               '--pdf-renderer', 'sandwich', '--rotate-pages',
-               '--image-dpi', '300',
-               '--skip-text', '0.0',
-               '--tesseract-pagesegmode', '3',
+        # Use simple --force-ocr without problematic flags
+        # This is the most aggressive and reliable approach for ensuring text on all pages
+        cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa',
+               '--oversample', '600',
                ocr_input, str(output_path)]
         success, out = run_subprocess(cmd)
+        
+        # Print error if OCR fails
+        if not success:
+            print(f"  [ERROR] ocrmypdf failed: {out[:200] if out else 'No error output'}")
         
         if not success:
             # Fallback to Ghostscript + ocrmypdf
