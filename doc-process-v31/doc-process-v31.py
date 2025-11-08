@@ -128,70 +128,6 @@ report_data = {
 #     # Disabled - no longer creating _failed directories
 #     pass
 
-# === GOOGLE DRIVE SYNC CONTROL ===
-def pause_google_drive_sync():
-    """Attempt to pause Google Drive sync programmatically"""
-    try:
-        # Check if Google Drive process is running
-        import psutil
-        google_drive_running = False
-        
-        for proc in psutil.process_iter(['name']):
-            try:
-                if proc.info['name'] and 'googledrivefs' in proc.info['name'].lower():
-                    google_drive_running = True
-                    break
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        
-        if not google_drive_running:
-            print("[INFO] Google Drive process not running - sync not active")
-            return True
-        
-        # Google Drive detected - attempt PowerShell automation
-        print("[INFO] Attempting automatic pause via PowerShell...")
-        
-        # PowerShell script to pause Google Drive (if available)
-        ps_script = """
-        $wshell = New-Object -ComObject WScript.Shell
-        $null = $wshell.AppActivate("Google Drive")
-        Start-Sleep -Milliseconds 500
-        # Try to send pause shortcut (Ctrl+Alt+P is common)
-        # Note: This may not work on all versions
-        Write-Host "Attempting to pause Google Drive sync..."
-        """
-        
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_script],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            # PowerShell automation is unreliable - always return False to show manual instructions
-            return False
-            
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return False
-            
-    except ImportError:
-        # psutil not available
-        print("[INFO] psutil not available - cannot detect Google Drive process")
-        return False
-    except Exception as e:
-        print(f"[WARN] Could not auto-pause: {e}")
-        return False
-
-def resume_google_drive_sync():
-    """Resume Google Drive sync after processing (informational only)"""
-    print("[INFO] Processing complete - Google Drive sync will auto-resume")
-    print("[INFO] If you manually paused sync, you can resume it now:")
-    print("  - Right-click Google Drive icon in system tray")
-    print("  - Click 'Resume syncing'")
-    return True
-
 # === TIMEOUT INPUT HELPER ===
 def input_with_timeout(prompt, timeout=30, default='1'):
     """Get user input with timeout. Returns default if timeout expires."""
@@ -354,46 +290,7 @@ def preflight_checks(skip_clean_check=False, root_dir=None):
         root_str = str(root_dir).upper()
         if root_str.startswith('G:\\') or root_str.startswith('\\\\'):
             print(f"[INFO] Network drive detected: {root_dir.drive or 'UNC path'}")
-            
-            # Check if this is a Google Drive Team Drive
-            if 'SHARED DRIVES' in root_str.upper() or 'TEAM DRIVES' in root_str.upper():
-                print(f"[WARN] Google Team Drive detected")
-                print(f"[WARN] Performance Impact:")
-                print(f"  - Google Drive File Stream syncs files in real-time")
-                print(f"  - Every file read/write triggers cloud sync (upload/download)")
-                print(f"  - OCR operations create large temp files that get synced")
-                print(f"  - Can slow processing by 3-10x depending on file sizes")
-                print(f"")
-                print(f"[RECOMMENDATION] To maximize performance:")
-                print(f"  1. Pause Google Drive sync during processing")
-                print(f"  2. OR copy files to local drive (E:\\) before processing")
-                print(f"")
-                report_data['preflight']['google_drive'] = 'DETECTED'
-                
-                # Attempt automatic pause
-                paused = pause_google_drive_sync()
-                if paused:
-                    print(f"[OK] Google Drive sync paused for processing")
-                    report_data['preflight']['google_drive_paused'] = True
-                else:
-                    print(f"[INFO] Manual pause required:")
-                    print(f"  - Right-click Google Drive icon in system tray")
-                    print(f"  - Click 'Pause syncing' -> Select '1 hour' or longer")
-                    print(f"")
-                    
-                    # Prompt user to continue or abort
-                    choice = input_with_timeout(
-                        "Continue with Google Drive sync active? [1] Yes (may be slow)  [2] Abort to pause manually (auto-continue in 30s): ",
-                        timeout=30,
-                        default='1'
-                    )
-                    if choice == '2':
-                        print("[STOP] Aborted by user - Please pause Google Drive sync and restart")
-                        return False
-                    report_data['preflight']['google_drive_paused'] = False
-            else:
-                print(f"[INFO] Ensure stable connection for duration of processing")
-            
+            print(f"[INFO] Ensure stable connection for duration of processing")
             report_data['preflight']['network_drive'] = True
         else:
             report_data['preflight']['network_drive'] = False
@@ -2416,8 +2313,5 @@ def main():
     print("[OK] Processing complete")
     print("="*80 + "\n")
     
-    # Resume Google Drive sync if it was detected
-    resume_google_drive_sync()
-
 if __name__ == "__main__":
     main()
