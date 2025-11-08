@@ -151,14 +151,19 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
    - Delete all annotations (highlights, comments, stamps)
    - Remove bookmarks/outline
    - Saves to temporary `_metadata_cleaned.pdf`
-2. **OCR at 600 DPI** (ocrmypdf on cleaned file):
+2. **OCR at 600 DPI with aggressive optimization** (ocrmypdf on cleaned file):
    - Produces searchable PDF/A format
-   - 600 DPI oversample for quality
-3. **Compress** (Ghostscript `/ebook` settings):
-   - Reduces file size for online access
+   - 600 DPI oversample for high-quality text extraction
+   - `--optimize 3` for aggressive compression during OCR (prevents 700-850% file expansion)
+   - `--jpeg-quality 85` balances quality vs file size
+   - Compresses images and text layer simultaneously (much more effective than post-compression)
+3. **Additional Compression** (Ghostscript `/ebook` settings - if needed):
+   - Applies secondary compression if ocrmypdf didn't achieve sufficient reduction
    - Maintains searchability and text layer
-   - Only keeps compressed version if >10% reduction
+   - Only keeps compressed version if >10% additional reduction
 4. **Cleanup**: Deletes temporary `_metadata_cleaned.pdf`
+
+**File size optimization**: ocrmypdf's built-in optimization prevents the 8 MB → 78 MB expansion that occurred with compression-only approaches. Expected output: 8 MB input → 10-15 MB searchable PDF (vs 78 MB without optimization).
 
 **Parallelization**: Multiple files processed simultaneously (5 workers for small files, sequential for large >5MB files)
 
@@ -264,12 +269,13 @@ filename.pdf
 - **Input**: `02_doc-renamed/*_r.pdf`
 - **Output**: `03_doc-clean/`
 - **Suffix**: `_o`
-- **Tools**: PyMuPDF (metadata removal), ocrmypdf (600 DPI OCR), Ghostscript (compression)
+- **Tools**: PyMuPDF (metadata removal), ocrmypdf 16.11.1 (600 DPI OCR with --optimize 3), Ghostscript (secondary compression)
 - **Parallel Processing**: Files <5MB processed in parallel; files ≥5MB processed sequentially to prevent subprocess deadlocks
 - **Action**: 
-  1. Remove metadata
-  2. OCR at 600 DPI → searchable PDF/A
-  3. Compress while maintaining searchability
+  1. Remove metadata and annotations with PyMuPDF
+  2. OCR at 600 DPI with aggressive optimization (--optimize 3, --jpeg-quality 85) → searchable PDF/A
+  3. Secondary Ghostscript compression if needed (>10% additional reduction)
+  4. Result: High-quality searchable PDFs at reasonable file sizes (prevents 700-850% expansion)
 
 ### Phase 4: Convert (Extract)
 - **Input**: `03_doc-clean/*_o.pdf`
