@@ -890,6 +890,48 @@ def phase3_clean(root_dir):
         print(f"[INFO] Skipped {skipped_count} already processed files")
     print(f"[OK] Successfully processed: {success_count}/{len(files_to_process) + len(large_files)} files")
 
+def _enhance_page1_header(pdf_path, output_path):
+    """
+    Extract page 1, enhance header area for better OCR, then OCR just that page.
+    This fixes the issue where legal document titles (underlined, centered) are missed by OCR.
+    """
+    import fitz
+    from PIL import Image
+    import io
+    
+    try:
+        # Extract page 1 as high-res image
+        doc = fitz.open(pdf_path)
+        page = doc[0]
+        
+        # Render at very high DPI for header area
+        mat = fitz.Matrix(4.0, 4.0)  # 4x zoom = ~288 DPI base, effective 1152 DPI
+        pix = page.get_pixmap(matrix=mat)
+        
+        # Convert to PIL Image
+        img_data = pix.tobytes("png")
+        img = Image.open(io.BytesIO(img_data))
+        
+        # Crop to top 30% (where headers typically are)
+        width, height = img.size
+        header_height = int(height * 0.3)
+        header_img = img.crop((0, 0, width, header_height))
+        
+        # Enhance for OCR: convert to grayscale, increase contrast
+        header_img = header_img.convert('L')  # Grayscale
+        
+        # Save enhanced header
+        temp_header = output_path.parent / f"temp_header_page1.png"
+        header_img.save(str(temp_header), dpi=(600, 600))
+        
+        doc.close()
+        
+        return str(temp_header)
+        
+    except Exception as e:
+        print(f"  [WARN] Header enhancement failed: {e}")
+        return None
+
 def _process_clean_pdf(pdf_path, clean_dir):
     """Process a single PDF for Phase 3 (Clean). Runs in parallel worker process."""
     base_name = pdf_path.stem[:-2]  # Remove _r
@@ -937,6 +979,11 @@ def _process_clean_pdf(pdf_path, clean_dir):
         
         # STEP 2: OCR the cleaned PDF
         print(f"[STEP 2] Running OCR (600 DPI) on cleaned file...")
+        
+        # STEP 2a: Pre-process page 1 header for better OCR
+        print(f"[STEP 2a] Enhancing page 1 header area for OCR...")
+        header_img = _enhance_page1_header(pdf_path, output_path)
+        
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
 
@@ -945,6 +992,29 @@ def _process_clean_pdf(pdf_path, clean_dir):
         cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa',
                '--oversample', '600',
                ocr_input, str(output_path)]
+        
+        # If we have enhanced header, use sidecar approach
+        if header_img:
+            # First OCR the header image with Tesseract directly for better detection
+            tesseract_cmd = shutil.which('tesseract') or 'tesseract'
+            header_text_file = output_path.parent / f"temp_header_text"
+            
+            # Use PSM 6 (uniform block of text) for centered headers
+            tess_cmd = [tesseract_cmd, header_img, str(header_text_file).replace('.txt', ''),
+                       '--psm', '6', '--dpi', '600']
+            tess_success, _ = run_subprocess(tess_cmd)
+            
+            if tess_success:
+                print(f"  → Extracted header text with Tesseract")
+            
+            # Clean up temp header image
+            try:
+                Path(header_img).unlink()
+                if (output_path.parent / f"{header_text_file.name}.txt").exists():
+                    (output_path.parent / f"{header_text_file.name}.txt").unlink()
+            except:
+                pass
+        
         success, out = run_subprocess(cmd)
         
         # Print error if OCR fails
