@@ -8,6 +8,23 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## What's New in v31
 
+### Critical Fixes (November 8, 2025)
+- **Phase 5 Fix**: Enhanced Gemini prompt to preserve `[BEGIN PDF Page 1]` marker
+  - Previous versions removed first page marker during text cleaning
+  - Added explicit multi-line instructions to never remove page markers
+  - Validates all page markers exist during Phase 7 verification
+- **Phase 6 Fix**: Delete-before-upload to prevent stale versions
+  - Now deletes existing GCS files before uploading new versions
+  - Ensures URLs always point to latest processed version
+  - Prevents version mismatches between local and cloud storage
+- **Phase 7 Enhancement**: PDF link validation
+  - Verifies PDF Public Link matches expected URL for actual file
+  - Detects missing `[BEGIN PDF Page 1]` markers
+  - Reports PDF link mismatches as validation errors
+- **OCR Fix**: Fixed ocrmypdf launcher path issue
+  - Reinstalled ocrmypdf with correct Python path
+  - Resolved silent OCR failures from incorrect venv path
+
 ### Performance Optimizations (November 8, 2025)
 - **Secrets loading optimization**: Reduced from 98 to 3 secrets (96% reduction)
   - Only loads required secrets: `GOOGLEAISTUDIO_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `GCS_BUCKET`

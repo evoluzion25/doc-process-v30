@@ -1429,19 +1429,19 @@ def phase6_gcs_upload(root_dir):
                 blob_name = f"{gcs_prefix}/{pdf_path.name}"
                 blob = bucket.blob(blob_name)
                 
-                # Check if blob exists
+                # CRITICAL: Delete existing file first to ensure fresh upload
                 if blob.exists():
-                    print(f"\n[EXISTS] {pdf_path.name} already in GCS")
-                    gcs_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_name}"
-                    uploaded_count += 1
-                else:
-                    # Upload new file
-                    print(f"\n[UPLOAD] {pdf_path.name} → gs://{GCS_BUCKET}/{blob_name}")
-                    blob.upload_from_filename(str(pdf_path))
-                    blob.make_public()
-                    gcs_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_name}"
-                    uploaded_count += 1
-                    print(f"[OK] Uploaded: {gcs_url}")
+                    print(f"\n[DELETE] Removing old version: {pdf_path.name}")
+                    blob.delete()
+                    print(f"[OK] Deleted old file from GCS")
+                
+                # Upload new file
+                print(f"\n[UPLOAD] {pdf_path.name} → gs://{GCS_BUCKET}/{blob_name}")
+                blob.upload_from_filename(str(pdf_path))
+                blob.make_public()
+                gcs_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_name}"
+                uploaded_count += 1
+                print(f"[OK] Uploaded: {gcs_url}")
                 
                 # Find corresponding files (remove only suffix _o, not all occurrences)
                 base_name = pdf_path.stem
