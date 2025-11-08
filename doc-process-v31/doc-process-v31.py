@@ -187,8 +187,8 @@ def resume_google_drive_sync():
     """Resume Google Drive sync after processing (informational only)"""
     print("[INFO] Processing complete - Google Drive sync will auto-resume")
     print("[INFO] If you manually paused sync, you can resume it now:")
-    print("  • Right-click Google Drive icon in system tray")
-    print("  • Click 'Resume syncing'")
+    print("  - Right-click Google Drive icon in system tray")
+    print("  - Click 'Resume syncing'")
     return True
 
 # === TIMEOUT INPUT HELPER ===
@@ -358,10 +358,10 @@ def preflight_checks(skip_clean_check=False, root_dir=None):
             if 'SHARED DRIVES' in root_str.upper() or 'TEAM DRIVES' in root_str.upper():
                 print(f"[WARN] Google Team Drive detected")
                 print(f"[WARN] Performance Impact:")
-                print(f"  • Google Drive File Stream syncs files in real-time")
-                print(f"  • Every file read/write triggers cloud sync (upload/download)")
-                print(f"  • OCR operations create large temp files that get synced")
-                print(f"  • Can slow processing by 3-10x depending on file sizes")
+                print(f"  - Google Drive File Stream syncs files in real-time")
+                print(f"  - Every file read/write triggers cloud sync (upload/download)")
+                print(f"  - OCR operations create large temp files that get synced")
+                print(f"  - Can slow processing by 3-10x depending on file sizes")
                 print(f"")
                 print(f"[RECOMMENDATION] To maximize performance:")
                 print(f"  1. Pause Google Drive sync during processing")
@@ -376,8 +376,8 @@ def preflight_checks(skip_clean_check=False, root_dir=None):
                     report_data['preflight']['google_drive_paused'] = True
                 else:
                     print(f"[INFO] Manual pause required:")
-                    print(f"  • Right-click Google Drive icon in system tray")
-                    print(f"  • Click 'Pause syncing' → Select '1 hour' or longer")
+                    print(f"  - Right-click Google Drive icon in system tray")
+                    print(f"  - Click 'Pause syncing' -> Select '1 hour' or longer")
                     print(f"")
                     
                     # Prompt user to continue or abort
