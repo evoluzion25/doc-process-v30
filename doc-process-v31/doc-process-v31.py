@@ -706,9 +706,11 @@ def _process_clean_pdf(pdf_path, clean_dir):
     base_name = pdf_path.stem[:-2]  # Remove _r
     output_path = clean_dir / f"{base_name}_o.pdf"
     temp_cleaned = None
+    compressed_path = None
     
     try:
         # STEP 1: Clean metadata, annotations, highlights, bookmarks FIRST
+        print(f"[STEP 1] Cleaning metadata/annotations: {pdf_path.name}")
         temp_cleaned = clean_dir / f"{base_name}_metadata_cleaned.pdf"
         try:
             doc = fitz.open(pdf_path)
@@ -717,12 +719,14 @@ def _process_clean_pdf(pdf_path, clean_dir):
             doc.set_metadata({})
             
             # Remove all annotations (including highlights, comments, stamps)
+            annot_count = 0
             for page in doc:
                 annot = page.first_annot
                 while annot:
                     next_annot = annot.next
                     page.delete_annot(annot)
                     annot = next_annot
+                    annot_count += 1
             
             # Remove bookmarks/outline
             doc.set_toc([])
@@ -730,6 +734,8 @@ def _process_clean_pdf(pdf_path, clean_dir):
             # Save cleaned PDF
             doc.save(str(temp_cleaned), garbage=4, deflate=True, clean=True)
             doc.close()
+            
+            print(f"  → Removed {annot_count} annotations, saved to temp: {temp_cleaned.name}")
             
             # Use cleaned PDF as input for OCR
             ocr_input = str(temp_cleaned)
@@ -741,6 +747,7 @@ def _process_clean_pdf(pdf_path, clean_dir):
             temp_cleaned = None
         
         # STEP 2: OCR the cleaned PDF
+        print(f"[STEP 2] Running OCR (600 DPI) on cleaned file...")
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
         
@@ -751,6 +758,7 @@ def _process_clean_pdf(pdf_path, clean_dir):
         
         if not success:
             # Fallback to Ghostscript + ocrmypdf
+            print(f"[STEP 2b] OCR failed, trying Ghostscript flatten + OCR...")
             temp_pdf = clean_dir / f"{base_name}_temp.pdf"
             
             try:
@@ -765,20 +773,24 @@ def _process_clean_pdf(pdf_path, clean_dir):
                         temp_pdf.unlink()
                 else:
                     # Last resort: just copy the file
+                    print(f"[STEP 2c] Fallback: copying cleaned file without additional OCR")
                     shutil.copy2(ocr_input, str(output_path))
                     success = True
             except Exception as e:
+                print(f"[STEP 2c] Fallback: copying cleaned file without additional OCR")
                 shutil.copy2(ocr_input, str(output_path))
                 success = True
         
         # STEP 3: Clean up temp metadata file AFTER all OCR attempts
         if temp_cleaned and temp_cleaned.exists():
+            print(f"[STEP 3] Deleting temp metadata file: {temp_cleaned.name}")
             try:
                 temp_cleaned.unlink()
             except Exception:
                 pass  # Ignore cleanup errors
         
         # STEP 4: Compress PDF to reduce file size while maintaining searchability
+        print(f"[STEP 4] Compressing OCR'd PDF for online access...")
         if success or output_path.exists():
             try:
                 original_size = output_path.stat().st_size
@@ -797,6 +809,7 @@ def _process_clean_pdf(pdf_path, clean_dir):
                     
                     # Only use compressed version if it's significantly smaller (>10% reduction)
                     if reduction > 10:
+                        print(f"  → Compressed {original_size:,} → {compressed_size:,} bytes ({reduction:.1f}% reduction)")
                         compressed_path.replace(output_path)
                         return ProcessingResult(
                             file_name=output_path.name,
@@ -804,10 +817,12 @@ def _process_clean_pdf(pdf_path, clean_dir):
                             metadata={'compression': f"{original_size:,} → {compressed_size:,} bytes ({reduction:.1f}% reduction)"}
                         )
                     else:
+                        print(f"  → Compression only {reduction:.1f}%, keeping original size")
                         if compressed_path.exists():
                             compressed_path.unlink()
                         return ProcessingResult(file_name=output_path.name, status='OK')
                 else:
+                    print(f"  → Compression failed, keeping original")
                     return ProcessingResult(file_name=output_path.name, status='OK')
                 
             except Exception as e:
@@ -826,10 +841,15 @@ def _process_clean_pdf(pdf_path, clean_dir):
     except Exception as e:
         return ProcessingResult(file_name=pdf_path.name, status='FAILED', error=str(e))
     finally:
-        # Always cleanup temp metadata file
+        # Always cleanup temp files
         if temp_cleaned and temp_cleaned.exists():
             try:
                 temp_cleaned.unlink()
+            except Exception:
+                pass
+        if compressed_path and compressed_path.exists():
+            try:
+                compressed_path.unlink()
             except Exception:
                 pass
 
