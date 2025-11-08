@@ -149,7 +149,7 @@ def input_with_timeout(prompt, timeout=30, default='1'):
     return result[0]
 
 # === PHASE 0: PRE-FLIGHT CHECKS ===
-def preflight_checks(skip_clean_check=False):
+def preflight_checks(skip_clean_check=False, root_dir=None):
     """Verify all credentials and tools before starting"""
     print("\n" + "="*80)
     print("DOCUMENT PROCESSING v31")
@@ -214,6 +214,85 @@ def preflight_checks(skip_clean_check=False):
         print("[FAIL] PyMuPDF: Not installed")
         report_data['preflight']['pymupdf'] = 'MISSING'
         all_ok = False
+    
+    # Check directory structure and connectivity
+    if root_dir:
+        print("\n" + "-" * 80)
+        print("DIRECTORY CONNECTIVITY CHECKS")
+        print("-" * 80)
+        
+        # Verify root directory exists and is accessible
+        if not root_dir.exists():
+            print(f"[FAIL] Root directory not found: {root_dir}")
+            report_data['preflight']['root_dir'] = 'NOT_FOUND'
+            all_ok = False
+        else:
+            print(f"[OK] Root directory accessible: {root_dir}")
+            report_data['preflight']['root_dir'] = 'OK'
+            
+            # Test write permissions
+            try:
+                test_file = root_dir / '.preflight_test'
+                test_file.write_text('test')
+                test_file.unlink()
+                print(f"[OK] Root directory writable")
+                report_data['preflight']['root_dir_writable'] = 'OK'
+            except Exception as e:
+                print(f"[FAIL] Root directory not writable: {e}")
+                report_data['preflight']['root_dir_writable'] = 'FAIL'
+                all_ok = False
+        
+        # Check all pipeline directories
+        directories = [
+            "01_doc-original",
+            "02_doc-renamed", 
+            "03_doc-clean",
+            "04_doc-convert",
+            "05_doc-format",
+            "y_logs"
+        ]
+        
+        missing_dirs = []
+        inaccessible_dirs = []
+        
+        for dir_name in directories:
+            dir_path = root_dir / dir_name
+            if not dir_path.exists():
+                missing_dirs.append(dir_name)
+            else:
+                # Test read/write access
+                try:
+                    test_file = dir_path / '.access_test'
+                    test_file.write_text('test')
+                    test_file.unlink()
+                except Exception as e:
+                    inaccessible_dirs.append((dir_name, str(e)))
+        
+        if missing_dirs:
+            print(f"[WARN] Missing directories (will be created): {', '.join(missing_dirs)}")
+            report_data['preflight']['missing_dirs'] = missing_dirs
+        else:
+            print(f"[OK] All {len(directories)} pipeline directories exist")
+            report_data['preflight']['missing_dirs'] = []
+        
+        if inaccessible_dirs:
+            print(f"[FAIL] Inaccessible directories:")
+            for dir_name, error in inaccessible_dirs:
+                print(f"  - {dir_name}: {error}")
+            report_data['preflight']['inaccessible_dirs'] = inaccessible_dirs
+            all_ok = False
+        else:
+            print(f"[OK] All existing directories are accessible")
+            report_data['preflight']['inaccessible_dirs'] = []
+        
+        # Check for network drive issues (if applicable)
+        root_str = str(root_dir).upper()
+        if root_str.startswith('G:\\') or root_str.startswith('\\\\'):
+            print(f"[INFO] Network drive detected: {root_dir.drive or 'UNC path'}")
+            print(f"[INFO] Ensure stable connection for duration of processing")
+            report_data['preflight']['network_drive'] = True
+        else:
+            report_data['preflight']['network_drive'] = False
     
     print("-" * 80)
     if all_ok:
@@ -2034,6 +2113,10 @@ def print_phase_overview():
     print("TOOLS VERIFICATION:")
     print("─" * 80)
     # Show tool status from preflight checks
+    print("  Phase 0 (Preflight):")
+    print("    ✓ Root directory: Accessible and writable")
+    print("    ✓ Pipeline directories: Created or verified (01-05, y_logs)")
+    print("    ✓ Network drive detection: Warns if G:\\ or UNC path")
     print("  Phase 3 Requirements:")
     print("    ✓ PyMuPDF (fitz): Metadata and annotation removal")
     print("    ✓ ocrmypdf: 600 DPI OCR with PDF/A output")
@@ -2078,7 +2161,7 @@ def main():
     
     # Run preflight checks (skip OCR tools for convert/format/verify/gcs_upload phases)
     skip_clean_check = all(p in ['convert', 'format', 'verify', 'gcs_upload'] for p in phases)
-    if not preflight_checks(skip_clean_check=skip_clean_check):
+    if not preflight_checks(skip_clean_check=skip_clean_check, root_dir=root_dir):
         sys.exit(1)
     
     # Display comprehensive phase overview

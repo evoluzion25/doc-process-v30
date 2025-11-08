@@ -33,6 +33,11 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
   - Resolved silent OCR failures from incorrect venv path
 
 ### Performance Optimizations (November 8, 2025)
+- **File processing order**: All phases now process files smallest to largest
+  - Better progress visibility (quick wins early)
+  - Faster initial feedback on pipeline status
+  - More predictable timing estimates (small files complete quickly)
+  - Applied to all 7 phases for consistent behavior
 - **Secrets loading optimization**: Reduced from 98 to 3 secrets (96% reduction)
   - Only loads required secrets: `GOOGLEAISTUDIO_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `GCS_BUCKET`
   - Faster startup time (~32x faster secrets parsing)
