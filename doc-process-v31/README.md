@@ -9,6 +9,13 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 ## What's New in v31
 
 ### Critical Fixes (November 8, 2025)
+- **Phase 3 Fix**: Reordered processing to clean metadata/annotations FIRST, then OCR
+  - Previous versions OCR'd first, then cleaned metadata (backwards)
+  - Now removes metadata, annotations, highlights, bookmarks BEFORE OCR
+  - Ensures no sensitive data leaks through to OCR'd output
+  - Prevents annotations from interfering with OCR quality
+  - Uses PyMuPDF to strip: metadata, all annotations (highlights/comments/stamps), bookmarks/outline
+  - Proper sanitization order: Clean → OCR → Compress
 - **Phase 5 Fix**: Enhanced Gemini prompt to preserve `[BEGIN PDF Page 1]` marker
   - Previous versions removed first page marker during text cleaning
   - Added explicit multi-line instructions to never remove page markers

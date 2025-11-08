@@ -707,13 +707,48 @@ def _process_clean_pdf(pdf_path, clean_dir):
     output_path = clean_dir / f"{base_name}_o.pdf"
     
     try:
+        # STEP 1: Clean metadata, annotations, highlights, bookmarks FIRST
+        temp_cleaned = clean_dir / f"{base_name}_metadata_cleaned.pdf"
+        try:
+            doc = fitz.open(pdf_path)
+            
+            # Clear all metadata
+            doc.set_metadata({})
+            
+            # Remove all annotations (including highlights, comments, stamps)
+            for page in doc:
+                annot = page.first_annot
+                while annot:
+                    next_annot = annot.next
+                    page.delete_annot(annot)
+                    annot = next_annot
+            
+            # Remove bookmarks/outline
+            doc.set_toc([])
+            
+            # Save cleaned PDF
+            doc.save(temp_cleaned, garbage=4, deflate=True, clean=True)
+            doc.close()
+            
+            # Use cleaned PDF as input for OCR
+            ocr_input = temp_cleaned
+        except Exception as e:
+            print(f"[WARN] Metadata cleaning failed for {pdf_path.name}: {e}")
+            ocr_input = pdf_path  # Fallback to original
+            temp_cleaned = None
+        
+        # STEP 2: OCR the cleaned PDF
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
         
-        # Try ocrmypdf first
+        # Try ocrmypdf
         cmd = [ocrmypdf_cmd, '--redo-ocr', '--output-type', 'pdfa', 
-               '--oversample', '600', str(pdf_path), str(output_path)]
+               '--oversample', '600', str(ocr_input), str(output_path)]
         success, out = run_subprocess(cmd)
+        
+        # Clean up temp metadata file
+        if temp_cleaned and temp_cleaned.exists():
+            temp_cleaned.unlink()
         
         if not success:
             # Fallback to Ghostscript + ocrmypdf
@@ -721,7 +756,7 @@ def _process_clean_pdf(pdf_path, clean_dir):
             
             try:
                 gs_cmd = ['gswin64c', '-sDEVICE=pdfimage32', '-o', 
-                         str(temp_pdf), str(pdf_path)]
+                         str(temp_pdf), str(ocr_input)]
                 gs_success, _ = run_subprocess(gs_cmd)
                 
                 if gs_success and temp_pdf.exists():
@@ -731,25 +766,15 @@ def _process_clean_pdf(pdf_path, clean_dir):
                         temp_pdf.unlink()
                 else:
                     # Last resort: just copy the file
-                    shutil.copy2(str(pdf_path), str(output_path))
+                    shutil.copy2(str(ocr_input), str(output_path))
                     success = True
             except Exception as e:
-                shutil.copy2(str(pdf_path), str(output_path))
+                shutil.copy2(str(ocr_input), str(output_path))
                 success = True
         
+        # STEP 3: Compress PDF to reduce file size while maintaining searchability
         if success or output_path.exists():
-            # Clean up metadata with PyMuPDF
             try:
-                doc = fitz.open(output_path)
-                doc.set_metadata({})  # Clear all metadata
-                # Save to a temp file first, then replace
-                temp_clean = clean_dir / f"{base_name}_clean_temp.pdf"
-                doc.save(temp_clean, garbage=4, deflate=True)
-                doc.close()
-                # Replace original with cleaned version
-                temp_clean.replace(output_path)
-                
-                # Optional: Compress PDF to reduce file size while maintaining searchability
                 original_size = output_path.stat().st_size
                 compressed_path = clean_dir / f"{base_name}_compressed_temp.pdf"
                 
@@ -781,7 +806,7 @@ def _process_clean_pdf(pdf_path, clean_dir):
                 
             except Exception as e:
                 if output_path.exists():
-                    return ProcessingResult(file_name=output_path.name, status='PARTIAL', error=f"Metadata cleanup failed: {e}")
+                    return ProcessingResult(file_name=output_path.name, status='PARTIAL', error=f"Compression failed: {e}")
                 else:
                     return ProcessingResult(file_name=pdf_path.name, status='FAILED', error=f"No output file created: {e}")
         else:
