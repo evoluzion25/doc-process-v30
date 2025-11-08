@@ -939,10 +939,9 @@ def _process_clean_pdf(pdf_path, clean_dir):
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
         
-        # Try ocrmypdf with aggressive optimization
+        # Try ocrmypdf (no optimization - let Ghostscript handle compression later)
         cmd = [ocrmypdf_cmd, '--redo-ocr', '--output-type', 'pdfa', 
-               '--oversample', '600', '--optimize', '3', '--jpeg-quality', '85',
-               ocr_input, str(output_path)]
+               '--oversample', '600', ocr_input, str(output_path)]
         success, out = run_subprocess(cmd)
         
         if not success:
