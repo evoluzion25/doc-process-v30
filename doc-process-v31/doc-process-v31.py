@@ -879,31 +879,18 @@ def _process_clean_pdf(pdf_path, clean_dir):
         # STEP 2: OCR the cleaned PDF
         print(f"[STEP 2] Running OCR (600 DPI) on cleaned file...")
         
-        # STEP 2a: Pre-process page 1 header for better OCR
-        print(f"[STEP 2a] Enhancing page 1 for header OCR...")
-        enhanced_pdf = _enhance_page1_header(Path(ocr_input), output_path)
-        
-        # Use enhanced PDF if available, otherwise use cleaned/original
-        if enhanced_pdf and Path(enhanced_pdf).exists():
-            ocr_input = enhanced_pdf
-        
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
 
-        # Use simple --force-ocr without problematic flags
-        # This is the most aggressive and reliable approach for ensuring text on all pages
-        cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa',
+        # Use --force-ocr with redo-ocr for aggressive re-OCR
+        # --rotate-pages-threshold 14.0 helps with slightly rotated headers
+        cmd = [ocrmypdf_cmd, '--force-ocr', '--redo-ocr',
+               '--rotate-pages-threshold', '14.0',
+               '--output-type', 'pdfa',
                '--oversample', '600',
                ocr_input, str(output_path)]
         
         success, out = run_subprocess(cmd)
-        
-        # Clean up temp enhanced PDF
-        if enhanced_pdf and Path(enhanced_pdf).exists():
-            try:
-                Path(enhanced_pdf).unlink()
-            except:
-                pass
         
         # Print error if OCR fails
         if not success:
