@@ -270,6 +270,9 @@ def phase1_directory(root_dir):
         # Continue to next phase - may have files already in 01_doc-original
         return
     
+    # Sort by file size (smallest to largest) for better progress visibility
+    pdf_files.sort(key=lambda x: x.stat().st_size)
+    
     moved_count = 0
     for pdf in pdf_files:
         # Always add _d suffix (remove any existing suffix first)
@@ -540,6 +543,9 @@ def phase2_rename(root_dir):
         print("[SKIP] No PDF files found in 01_doc-original")
         return
     
+    # Sort by file size (smallest to largest) for better progress visibility
+    pdf_files.sort(key=lambda x: x.stat().st_size)
+    
     # Configure Gemini ONCE for all files
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(MODEL_NAME)
@@ -631,6 +637,9 @@ def phase3_clean(root_dir):
     if not pdf_files:
         print("[SKIP] No PDF files found in 02_doc-renamed")
         return
+    
+    # Sort by file size (smallest to largest)
+    pdf_files.sort(key=lambda x: x.stat().st_size)
     
     # Filter out already processed files
     files_to_process = []
@@ -984,6 +993,9 @@ def phase4_convert(root_dir):
     if not pdf_files:
         print("[SKIP] No PDF files found in 03_doc-clean")
         return
+    
+    # Sort by file size (smallest to largest)
+    pdf_files.sort(key=lambda x: x.stat().st_size)
     
     # Initialize Google Vision client
     try:
@@ -1364,6 +1376,9 @@ def phase5_format(root_dir):
         print("[SKIP] No text files found in 04_doc-convert")
         return
     
+    # Sort by file size (smallest to largest)
+    txt_files.sort(key=lambda x: x.stat().st_size)
+    
     # Check which files need processing FIRST
     files_to_process = []
     skipped_count = 0
@@ -1468,6 +1483,9 @@ def phase6_gcs_upload(root_dir):
     if not pdf_files:
         print(f"[SKIP] No cleaned PDFs found in {clean_dir}")
         return
+    
+    # Sort by file size (smallest to largest)
+    pdf_files.sort(key=lambda x: x.stat().st_size)
     
     print(f"[INFO] Found {len(pdf_files)} PDFs to upload")
     print(f"[INFO] PDF Directory: {pdf_directory}")
@@ -1592,6 +1610,9 @@ def phase7_verify(root_dir):
     if not txt_files:
         print("[SKIP] No formatted files to verify")
         return
+    
+    # Sort by file size (smallest to largest)
+    txt_files.sort(key=lambda x: x.stat().st_size)
     
     verification_results = []
     manifest_rows = []
