@@ -937,22 +937,22 @@ def _process_clean_pdf(pdf_path, clean_dir):
         
         # STEP 2: OCR the cleaned PDF
         print(f"[STEP 2] Running OCR (600 DPI) on cleaned file...")
-     # Get ocrmypdf path (try PATH first, then venv)
-     ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
+        # Get ocrmypdf path (try PATH first, then venv)
+        ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
 
-     # Use --force-ocr with sandwich renderer for reliable text layer on ALL pages
-     # --skip-text 0.0 forces OCR even on pages with existing text
-     # --rotate-pages auto-corrects page orientation
-     # --image-dpi provides consistent rendering for header areas
-     # --tesseract-pagesegmode 3 uses automatic page segmentation (recommended)
-     cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa-2',
-         '--oversample', '600', '--optimize', '1',
-         '--pdf-renderer', 'sandwich', '--rotate-pages',
-         '--image-dpi', '300',
-         '--skip-text', '0.0',
-         '--tesseract-pagesegmode', '3',
-         ocr_input, str(output_path)]
-     success, out = run_subprocess(cmd)
+        # Use --force-ocr with sandwich renderer for reliable text layer on ALL pages
+        # --skip-text 0.0 forces OCR even on pages with existing text
+        # --rotate-pages auto-corrects page orientation
+        # --image-dpi provides consistent rendering for header areas
+        # --tesseract-pagesegmode 3 uses automatic page segmentation (recommended)
+        cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa-2',
+               '--oversample', '600', '--optimize', '1',
+               '--pdf-renderer', 'sandwich', '--rotate-pages',
+               '--image-dpi', '300',
+               '--skip-text', '0.0',
+               '--tesseract-pagesegmode', '3',
+               ocr_input, str(output_path)]
+        success, out = run_subprocess(cmd)
         
         if not success:
             # Fallback to Ghostscript + ocrmypdf
