@@ -882,10 +882,9 @@ def _process_clean_pdf(pdf_path, clean_dir):
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
 
-        # Use --force-ocr with redo-ocr for aggressive re-OCR
-        # --rotate-pages-threshold 14.0 helps with slightly rotated headers
-        cmd = [ocrmypdf_cmd, '--force-ocr', '--redo-ocr',
-               '--rotate-pages-threshold', '14.0',
+        # Use --redo-ocr to completely replace existing text layers
+        # This is more aggressive than --force-ocr for problematic headers
+        cmd = [ocrmypdf_cmd, '--redo-ocr',
                '--output-type', 'pdfa',
                '--oversample', '600',
                ocr_input, str(output_path)]
