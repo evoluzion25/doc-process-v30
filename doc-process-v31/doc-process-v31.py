@@ -82,7 +82,7 @@ CASE_ACRONYMS = ["9c1", "9c2", "3c1", "3c2", "9c_powers"]
 
 # Parallel processing configuration
 MAX_WORKERS_IO = 5  # For API calls (Gemini, Google Vision)
-MAX_WORKERS_CPU = 3  # For OCR operations
+MAX_WORKERS_CPU = 5  # For OCR operations (optimized for 24-core system)
 
 
 # === CUSTOM EXCEPTIONS ===

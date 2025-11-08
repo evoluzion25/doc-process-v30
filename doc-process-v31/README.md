@@ -32,6 +32,11 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
   - Reduced memory footprint (96% fewer environment variables)
   - More secure (only loads what's needed)
 - **Explicit dependency management**: Required secrets clearly documented in code
+- **CPU worker optimization**: Increased from 3 to 5 workers for small file OCR
+  - Optimized for 24-core systems
+  - Large files (>5MB) remain sequential to prevent subprocess deadlocks
+  - Small files process ~40% faster (5 workers vs 3 workers)
+  - Estimated Phase 3 time reduction: 2 minutes on typical 30-file batch
 
 ### Phase Reorganization (November 2025)
 - **Phase 6 is now GCS Upload**: Upload PDFs to cloud storage and update file headers
