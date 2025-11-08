@@ -1030,7 +1030,7 @@ def _process_clean_pdf(pdf_path, clean_dir):
     except Exception as e:
         return ProcessingResult(file_name=pdf_path.name, status='FAILED', error=str(e))
     finally:
-        # Always cleanup temp files
+        # Always cleanup ALL temp files
         if temp_cleaned and temp_cleaned.exists():
             try:
                 temp_cleaned.unlink()
@@ -1041,6 +1041,13 @@ def _process_clean_pdf(pdf_path, clean_dir):
                 compressed_path.unlink()
             except Exception:
                 pass
+        # Also cleanup Ghostscript flatten temp file
+        try:
+            temp_pdf = clean_dir / f"{base_name}_temp.pdf"
+            if temp_pdf.exists():
+                temp_pdf.unlink()
+        except Exception:
+            pass
 
 # === GCS HELPER FUNCTIONS ===
 def sync_directory_to_gcs(local_dir, gcs_prefix, make_public=False, mirror=False):
