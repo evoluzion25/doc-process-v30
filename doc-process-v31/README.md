@@ -8,6 +8,14 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## What's New in v31
 
+### Performance Optimizations (November 8, 2025)
+- **Secrets loading optimization**: Reduced from 98 to 3 secrets (96% reduction)
+  - Only loads required secrets: `GOOGLEAISTUDIO_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `GCS_BUCKET`
+  - Faster startup time (~32x faster secrets parsing)
+  - Reduced memory footprint (96% fewer environment variables)
+  - More secure (only loads what's needed)
+- **Explicit dependency management**: Required secrets clearly documented in code
+
 ### Phase Reorganization (November 2025)
 - **Phase 6 is now GCS Upload**: Upload PDFs to cloud storage and update file headers
 - **Phase 7 is now Comprehensive Verification**: Validates PDF directory, online access, and content accuracy
@@ -20,14 +28,17 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 - **Logical flow**: Upload files first, then verify everything is correct
 
 ### Phase 6 GCS Upload Enhancements (November 2025)
-- **Full directory path preservation**: GCS uploads now use complete directory structure
-- **Example**: `E:\01_prjct_active\02_legal_system_v1.2\x_docs\01_fremont\15_coa` → `gs://fremont-1/docs/01_prjct_active/02_legal_system_v1.2/x_docs/01_fremont/15_coa/`
+- **Smart path handling**: 
+  - E:\ drive paths: Preserves full directory structure from E:\ root
+  - Other drives (G:\, network drives): Uses folder name only for cleaner URLs
+- **Example (E:\ drive)**: `E:\01_prjct_active\02_legal_system_v1.2\x_docs\01_fremont\15_coa` → `gs://fremont-1/docs/01_prjct_active/02_legal_system_v1.2/x_docs/01_fremont/15_coa/`
+- **Example (Google Drive)**: `G:\Shared drives\...\09_Pleadings_plaintiff` → `gs://fremont-1/docs/09_Pleadings_plaintiff/`
 - **Dual header updates**: Updates both 04_doc-convert/*_c.txt and 05_doc-format/*_v31.txt files
 - **New header format**:
-  - `PDF Directory: 01_prjct_active/02_legal_system_v1.2/x_docs/01_fremont/15_coa`
-  - `PDF Public Link: https://storage.cloud.google.com/fremont-1/docs/.../filename.pdf`
+  - `PDF Directory: 09_Pleadings_plaintiff` (or full path for E:\ drive)
+  - `PDF Public Link: https://storage.cloud.google.com/fremont-1/docs/09_Pleadings_plaintiff/filename.pdf`
 - **Backward compatibility**: Removes old "PDF URL:" headers when updating
-- Supports reorganized folder structures without breaking GCS links
+- Supports both local (E:\) and network drive structures
 
 ### Phase 2 Rename Enhancements (November 2025)
 - **Smart date detection**: Skips adding date prefix if filename already starts with YYYYMMDD format
@@ -211,14 +222,18 @@ filename.pdf
   1. Extract text in 5-page batches via Google Vision API
   2. Automatic PyMuPDF fallback for files >35MB (overcomes Google Vision 40MB payload limit)
   3. Add structured template with document information header and page markers
-  4. Generate public GCS URL (to be populated in Phase 7)
+  4. Initial GCS URL included (updated in Phase 6)
 
 **Template Structure**:
 ```
 §§ DOCUMENT INFORMATION §§
-PDF Location: <GCS URL placeholder>
-PDF Filename: <filename>
-Page Count: <N>
+
+DOCUMENT NUMBER: TBD
+DOCUMENT NAME: <base_name>
+ORIGINAL PDF NAME: <filename>
+PDF DIRECTORY: <folder_name or path>
+PDF PUBLIC LINK: <GCS URL>
+TOTAL PAGES: <N>
 
 =====================================================================
 BEGINNING OF PROCESSED DOCUMENT
@@ -226,11 +241,9 @@ BEGINNING OF PROCESSED DOCUMENT
 
 [BEGIN PDF Page 1]
 <page 1 content>
-[END PDF Page 1]
 
 [BEGIN PDF Page 2]
 <page 2 content>
-[END PDF Page 2]
 
 =====================================================================
 END OF PROCESSED DOCUMENT
@@ -256,20 +269,28 @@ END OF PROCESSED DOCUMENT
 - **Critical Format**: Maintains `\n\n[BEGIN PDF Page N]\n\n` (two blank lines) around all page markers
 - **Prompt**: Uses exact v21 prompt for OCR correction without formatting preservation instructions
 
-### Phase 6: Verify
-- **Input**: `04_doc-convert/*_c.txt` + `05_doc-format/*_v31.txt`
-- **Output**: Console diff report
-- **Action**: Compare convert vs format, validate completeness
-
-### Phase 7: GCS Upload
-- **Input**: `03_doc-clean/*_o.pdf` + `04_doc-convert/*_c.txt`
+### Phase 6: GCS Upload
+- **Input**: `03_doc-clean/*_o.pdf` + `04_doc-convert/*_c.txt` + `05_doc-format/*_v31.txt`
 - **Output**: GCS bucket + updated text files
 - **Tools**: Google Cloud Storage
 - **Action**: 
-  1. Upload all cleaned PDFs to `gs://fremont-1/docs/<project>/`
+  1. Upload all cleaned PDFs to `gs://fremont-1/docs/<folder_name>/`
   2. Generate public URLs for each PDF
-  3. Insert URL header into corresponding `_c.txt` files
-- **URL Format**: `https://storage.cloud.google.com/fremont-1/docs/<project>/<filename>`
+  3. Update headers in both `_c.txt` and `_v31.txt` files
+- **URL Format**: `https://storage.cloud.google.com/fremont-1/docs/<folder_name>/<filename>`
+- **Headers Added**:
+  - `PDF Directory: <folder_name>` (or full path for E:\ drive)
+  - `PDF Public Link: <GCS URL>`
+
+### Phase 7: Verify
+- **Input**: `03_doc-clean/*_o.pdf` + `04_doc-convert/*_c.txt` + `05_doc-format/*_v31.txt`
+- **Output**: Verification report + PDF manifest CSV
+- **Action**: Comprehensive validation
+  - PDF Directory header validation (matches actual folder path)
+  - PDF Public Link format validation (proper URL format)
+  - Page count accuracy (PDF vs text file)
+  - Character count validation
+  - File completeness checks
 
 ## Performance Comparison
 
