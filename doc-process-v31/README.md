@@ -38,6 +38,14 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
   - Faster initial feedback on pipeline status
   - More predictable timing estimates (small files complete quickly)
   - Applied to all 7 phases for consistent behavior
+- **Google Drive sync detection and auto-pause**: Automatically detects Google Team Drives
+  - Detects real-time sync that slows processing by 3-10x
+  - Uses psutil to detect Google Drive File Stream process
+  - Attempts automatic pause (informational if automation unavailable)
+  - Provides clear manual pause instructions if auto-pause fails
+  - Shows performance warning with recommendations
+  - Prevents 30-60 minute slowdowns on 10-minute tasks
+  - Interactive prompt with 30-second auto-continue timeout
 - **Secrets loading optimization**: Reduced from 98 to 3 secrets (96% reduction)
   - Only loads required secrets: `GOOGLEAISTUDIO_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS`, `GCS_BUCKET`
   - Faster startup time (~32x faster secrets parsing)
