@@ -940,9 +940,12 @@ def _process_clean_pdf(pdf_path, clean_dir):
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
         
-        # Try ocrmypdf (no optimization - let Ghostscript handle compression later)
+        # Use --redo-ocr to preserve existing good text and only OCR pages without text
+        # This is smarter than --force-ocr: focuses on image-only pages, preserves quality elsewhere
+        # Also add --clean and --deskew to improve OCR quality on problematic pages
         cmd = [ocrmypdf_cmd, '--redo-ocr', '--output-type', 'pdfa', 
-               '--oversample', '600', ocr_input, str(output_path)]
+               '--oversample', '600', '--optimize', '1', '--clean', '--deskew',
+               ocr_input, str(output_path)]
         success, out = run_subprocess(cmd)
         
         if not success:
