@@ -940,11 +940,13 @@ def _process_clean_pdf(pdf_path, clean_dir):
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
         
-        # Use --redo-ocr to preserve existing good text and only OCR pages without text
-        # This is smarter than --force-ocr: focuses on image-only pages, preserves quality elsewhere
-        # Also add --clean and --deskew to improve OCR quality on problematic pages
-        cmd = [ocrmypdf_cmd, '--redo-ocr', '--output-type', 'pdfa', 
-               '--oversample', '600', '--optimize', '1', '--clean', '--deskew',
+        # Use --force-ocr with sandwich renderer for reliable text layer on ALL pages
+        # --skip-text 0.0 forces OCR even on pages with existing text
+        # --rotate-pages auto-corrects page orientation
+        cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa-2', 
+               '--oversample', '600', '--optimize', '1', 
+               '--pdf-renderer', 'sandwich', '--rotate-pages',
+               '--skip-text', '0.0',  # Forces OCR on all pages
                ocr_input, str(output_path)]
         success, out = run_subprocess(cmd)
         
