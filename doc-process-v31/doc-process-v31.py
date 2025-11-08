@@ -289,7 +289,37 @@ def preflight_checks(skip_clean_check=False, root_dir=None):
         root_str = str(root_dir).upper()
         if root_str.startswith('G:\\') or root_str.startswith('\\\\'):
             print(f"[INFO] Network drive detected: {root_dir.drive or 'UNC path'}")
-            print(f"[INFO] Ensure stable connection for duration of processing")
+            
+            # Check if this is a Google Drive Team Drive
+            if 'SHARED DRIVES' in root_str.upper() or 'TEAM DRIVES' in root_str.upper():
+                print(f"[WARN] Google Team Drive detected")
+                print(f"[WARN] Performance Impact:")
+                print(f"  • Google Drive File Stream syncs files in real-time")
+                print(f"  • Every file read/write triggers cloud sync (upload/download)")
+                print(f"  • OCR operations create large temp files that get synced")
+                print(f"  • Can slow processing by 3-10x depending on file sizes")
+                print(f"")
+                print(f"[RECOMMENDATION] To maximize performance:")
+                print(f"  1. Pause Google Drive sync during processing:")
+                print(f"     - Right-click Google Drive icon in system tray")
+                print(f"     - Click 'Pause syncing' → Select duration")
+                print(f"  2. OR copy files to local drive (E:\\) before processing")
+                print(f"  3. Resume sync after processing completes")
+                print(f"")
+                report_data['preflight']['google_drive'] = 'DETECTED'
+                
+                # Prompt user to continue or abort
+                choice = input_with_timeout(
+                    "Continue with Google Drive sync active? [1] Yes (may be slow)  [2] Abort to pause sync (auto-continue in 30s): ",
+                    timeout=30,
+                    default='1'
+                )
+                if choice == '2':
+                    print("[STOP] Aborted by user - Please pause Google Drive sync and restart")
+                    return False
+            else:
+                print(f"[INFO] Ensure stable connection for duration of processing")
+            
             report_data['preflight']['network_drive'] = True
         else:
             report_data['preflight']['network_drive'] = False
