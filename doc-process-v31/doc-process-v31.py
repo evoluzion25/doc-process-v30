@@ -29,6 +29,7 @@ from google.cloud import vision
 from google.cloud import storage
 import re
 import json
+import PyPDF2
 import time
 import csv
 import concurrent.futures
@@ -1047,6 +1048,30 @@ def _process_clean_pdf(pdf_path, clean_dir):
                 temp_pdf.unlink()
         except Exception:
             pass
+
+def test_pdf_text_extraction(pdf_path):
+    """Test if PDF has selectable/extractable text (OCR text layer).
+    
+    Returns: (has_text: bool, text_sample: str, page_count: int)
+    """
+    try:
+        with open(pdf_path, 'rb') as f:
+            reader = PyPDF2.PdfReader(f)
+            page_count = len(reader.pages)
+            
+            # Extract text from first 3 pages
+            text_samples = []
+            for i in range(min(3, page_count)):
+                page_text = reader.pages[i].extract_text()
+                if page_text and page_text.strip():
+                    text_samples.append(page_text.strip()[:200])  # First 200 chars
+            
+            full_sample = "\n".join(text_samples)
+            has_text = len(full_sample.strip()) > 50  # At least 50 characters
+            
+            return has_text, full_sample[:500], page_count
+    except Exception as e:
+        return False, f"Error: {str(e)}", 0
 
 # === GCS HELPER FUNCTIONS ===
 def sync_directory_to_gcs(local_dir, gcs_prefix, make_public=False, mirror=False):
