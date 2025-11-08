@@ -789,44 +789,46 @@ def phase3_clean(root_dir):
 
 def _enhance_page1_header(pdf_path, output_path):
     """
-    Extract page 1, enhance header area for better OCR, then OCR just that page.
+    Replace page 1 with high-res image version for better OCR.
     This fixes the issue where legal document titles (underlined, centered) are missed by OCR.
     """
     import fitz
-    from PIL import Image
-    import io
     
     try:
-        # Extract page 1 as high-res image
-        doc = fitz.open(pdf_path)
+        # Create temp enhanced PDF
+        temp_enhanced = output_path.parent / f"temp_enhanced_{pdf_path.name}"
+        
+        doc = fitz.open(str(pdf_path))
         page = doc[0]
         
-        # Render at very high DPI for header area
-        mat = fitz.Matrix(4.0, 4.0)  # 4x zoom = ~288 DPI base, effective 1152 DPI
-        pix = page.get_pixmap(matrix=mat)
+        # Render page 1 at very high DPI
+        mat = fitz.Matrix(4.0, 4.0)  # 4x zoom = effective 1152 DPI
+        pix = page.get_pixmap(matrix=mat, alpha=False)
         
-        # Convert to PIL Image
-        img_data = pix.tobytes("png")
-        img = Image.open(io.BytesIO(img_data))
+        # Get page dimensions
+        rect = page.rect
         
-        # Crop to top 30% (where headers typically are)
-        width, height = img.size
-        header_height = int(height * 0.3)
-        header_img = img.crop((0, 0, width, header_height))
+        # Create new PDF with enhanced page 1
+        new_doc = fitz.open()
+        new_page = new_doc.new_page(width=rect.width, height=rect.height)
         
-        # Enhance for OCR: convert to grayscale, increase contrast
-        header_img = header_img.convert('L')  # Grayscale
+        # Insert high-res image of original page 1
+        img_bytes = pix.tobytes("png")
+        new_page.insert_image(rect, stream=img_bytes)
         
-        # Save enhanced header
-        temp_header = output_path.parent / f"temp_header_page1.png"
-        header_img.save(str(temp_header), dpi=(600, 600))
+        # Copy remaining pages as-is
+        new_doc.insert_pdf(doc, from_page=1, to_page=doc.page_count-1)
         
+        # Save enhanced PDF
+        new_doc.save(str(temp_enhanced))
+        new_doc.close()
         doc.close()
         
-        return str(temp_header)
+        print(f"  → Enhanced page 1 at 1152 DPI for header OCR")
+        return str(temp_enhanced)
         
     except Exception as e:
-        print(f"  [WARN] Header enhancement failed: {e}")
+        print(f"  [WARN] Page 1 enhancement failed: {e}")
         return None
 
 def _process_clean_pdf(pdf_path, clean_dir):
@@ -878,8 +880,12 @@ def _process_clean_pdf(pdf_path, clean_dir):
         print(f"[STEP 2] Running OCR (600 DPI) on cleaned file...")
         
         # STEP 2a: Pre-process page 1 header for better OCR
-        print(f"[STEP 2a] Enhancing page 1 header area for OCR...")
-        header_img = _enhance_page1_header(pdf_path, output_path)
+        print(f"[STEP 2a] Enhancing page 1 for header OCR...")
+        enhanced_pdf = _enhance_page1_header(Path(ocr_input), output_path)
+        
+        # Use enhanced PDF if available, otherwise use cleaned/original
+        if enhanced_pdf and Path(enhanced_pdf).exists():
+            ocr_input = enhanced_pdf
         
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
@@ -890,29 +896,14 @@ def _process_clean_pdf(pdf_path, clean_dir):
                '--oversample', '600',
                ocr_input, str(output_path)]
         
-        # If we have enhanced header, use sidecar approach
-        if header_img:
-            # First OCR the header image with Tesseract directly for better detection
-            tesseract_cmd = shutil.which('tesseract') or 'tesseract'
-            header_text_file = output_path.parent / f"temp_header_text"
-            
-            # Use PSM 6 (uniform block of text) for centered headers
-            tess_cmd = [tesseract_cmd, header_img, str(header_text_file).replace('.txt', ''),
-                       '--psm', '6', '--dpi', '600']
-            tess_success, _ = run_subprocess(tess_cmd)
-            
-            if tess_success:
-                print(f"  → Extracted header text with Tesseract")
-            
-            # Clean up temp header image
+        success, out = run_subprocess(cmd)
+        
+        # Clean up temp enhanced PDF
+        if enhanced_pdf and Path(enhanced_pdf).exists():
             try:
-                Path(header_img).unlink()
-                if (output_path.parent / f"{header_text_file.name}.txt").exists():
-                    (output_path.parent / f"{header_text_file.name}.txt").unlink()
+                Path(enhanced_pdf).unlink()
             except:
                 pass
-        
-        success, out = run_subprocess(cmd)
         
         # Print error if OCR fails
         if not success:
