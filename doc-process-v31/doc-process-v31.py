@@ -882,10 +882,9 @@ def _process_clean_pdf(pdf_path, clean_dir):
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
 
-        # Use --redo-ocr to completely replace existing text layers
-        # This is more aggressive than --force-ocr for problematic headers
-        cmd = [ocrmypdf_cmd, '--redo-ocr',
-               '--output-type', 'pdfa',
+        # Use simple --force-ocr (most reliable)
+        # Phase 4 (Google Cloud Vision) will capture any text missed here
+        cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa',
                '--oversample', '600',
                ocr_input, str(output_path)]
         
