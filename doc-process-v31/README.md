@@ -9,7 +9,20 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 ## What's New in v31
 
 ### Critical Fixes (November 8, 2025)
-- **Phase 3 Fix**: Reordered processing to clean metadata/annotations FIRST, then OCR
+- **Phase 3 OCR Enhancement**: PIL preprocessing with fallback approach for optimal quality
+  - **STEP 1**: Try fast OCR first (--force-ocr, ~1 sec/page)
+  - **Quality Check**: Verify page 1 has >100 characters
+  - **STEP 2**: If quality check fails, use PIL preprocessing:
+    - Render PDF at 3x zoom (~864 DPI effective resolution)
+    - Convert to grayscale and enhance contrast 2.0x
+    - Remove horizontal lines (underlines) via pixel-level scanning
+    - Create PDF from preprocessed images with correct page dimensions (÷3.0 for 72 DPI)
+    - OCR preprocessed PDF with --force-ocr --oversample 600
+    - Compress with Ghostscript
+  - **Result**: Successfully captures underlined headers that Tesseract misses (e.g., "AMENDED PETITION")
+  - **Efficiency**: Only preprocesses PDFs that fail fast OCR quality check (~2-3 sec/page overhead only when needed)
+  - **Page Size Fix**: Corrected scaling from 3x rendered images to standard 72 DPI (612x792 points for 8.5x11 inches)
+- **Phase 3 Metadata Cleaning**: Reordered processing to clean metadata/annotations FIRST, then OCR
   - Previous versions OCR'd first, then cleaned metadata (backwards)
   - Now removes metadata, annotations, highlights, bookmarks BEFORE OCR
   - Ensures no sensitive data leaks through to OCR'd output
