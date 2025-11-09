@@ -857,33 +857,22 @@ def _process_clean_pdf(pdf_path, clean_dir):
         if not success:
             print(f"  [WARN] Fast OCR failed, will try preprocessing")
         else:
-            # Verify OCR quality - check if header text was captured
+            # Verify OCR quality based on text extraction only
             try:
                 doc = fitz.open(str(output_path))
                 page1_text = doc[0].get_text()
                 doc.close()
                 
-                # For AMENDED documents, check that BOTH words appear (underlined headers often missing)
-                has_amended_and_petition = ("AMENDED" in page1_text.upper() and "PETITION" in page1_text.upper())
-                
-                # Basic quality check
+                # Quality check: page 1 should have meaningful text
                 good_quality = len(page1_text) > 100
                 
-                if good_quality and has_amended_and_petition:
-                    print(f"  → Fast OCR successful ({len(page1_text)} chars, 'AMENDED PETITION' found)")
-                    success = True
-                elif good_quality and "AMENDED" not in page1_text.upper():
-                    # Likely missing underlined header - force preprocessing
-                    print(f"  [WARN] Fast OCR missing 'AMENDED' keyword (likely underlined header), trying preprocessing")
-                    success = False
-                    output_path.unlink()  # Remove poor quality output
-                elif not good_quality:
-                    print(f"  [WARN] Fast OCR produced little text ({len(page1_text)} chars), trying preprocessing")
-                    success = False
-                    output_path.unlink()
-                else:
+                if good_quality:
                     print(f"  → Fast OCR successful ({len(page1_text)} chars on page 1)")
                     success = True
+                else:
+                    print(f"  [WARN] Fast OCR produced little text ({len(page1_text)} chars), trying preprocessing")
+                    success = False
+                    output_path.unlink()  # Remove poor quality output
             except Exception as e:
                 print(f"  [WARN] Could not verify OCR quality: {e}")
                 success = False
