@@ -289,7 +289,48 @@ E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\projec
 
 # Phase 7: Verify (compare results)
 E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase verify
+
+# Phase 8: Repair (fix all documented issues from last verification report)
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase repair
+
+# Repair and Re-verify (one command to fix issues and verify again)
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --repair-and-verify
 ```
+
+### Automatic Repair Workflow
+
+After Phase 7 verification identifies issues, use Phase 8 to automatically repair:
+
+```powershell
+# Step 1: Run verification to identify issues
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase verify
+
+# Step 2: Review VERIFICATION_REPORT_v31_*.txt to see issues
+
+# Step 3: Repair all documented issues automatically
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase repair
+
+# Step 4: Re-verify to confirm fixes
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase verify
+
+# OR: Use --repair-and-verify shortcut (Steps 3 + 4 combined)
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --repair-and-verify
+```
+
+**What Phase 8 (Repair) Does**:
+1. Reads most recent `VERIFICATION_REPORT_v31_*.txt`
+2. Parses "FILES WITH ISSUES" section to identify problem files
+3. Analyzes each issue to determine repair strategy:
+   - **Content issues** (low accuracy, missing markers) → Re-run Phase 5 (Format)
+   - **Header issues** (missing directory/URL) → Update headers in place
+   - **GCS issues** (inaccessible URLs) → Re-run Phase 6 (GCS Upload)
+4. Executes repairs automatically for all files
+5. Outputs repair summary
+
+**--repair-and-verify Flag**:
+- Combines Phase 8 (Repair) + Phase 7 (Verify) in one command
+- Automatically fixes issues then generates new verification report
+- Useful for iterative quality improvement
 
 ### After Directory Rename
 

@@ -2841,6 +2841,98 @@ def update_headers_single_file(formatted_file, root_dir):
     with open(formatted_file, 'w', encoding='utf-8') as f:
         f.write('\n'.join(updated_lines))
 
+# === PHASE 8: REPAIR - AUTOMATIC REPAIR OF VERIFICATION ISSUES ===
+def phase8_repair(root_dir):
+    """Phase 8: Read last verification report and repair all documented issues"""
+    print("\nPHASE 8: REPAIR - AUTOMATIC ISSUE RESOLUTION")
+    print("-" * 80)
+    
+    # Find most recent verification report
+    report_files = sorted(root_dir.glob("VERIFICATION_REPORT_v31_*.txt"), reverse=True)
+    
+    if not report_files:
+        print("[ERROR] No verification report found")
+        print("[INFO] Run Phase 7 (Verify) first to identify issues")
+        return
+    
+    latest_report = report_files[0]
+    print(f"[INFO] Reading verification report: {latest_report.name}")
+    
+    # Parse report to find files with issues
+    files_needing_repair = []
+    
+    with open(latest_report, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Extract files from "FILES WITH ISSUES" section
+    if "FILES WITH ISSUES" in content:
+        issues_section = content.split("FILES WITH ISSUES")[1].split("\n\n")[0]
+        lines = issues_section.split('\n')
+        
+        current_file = None
+        current_issues = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('-') or line.startswith('File') or line.startswith('Status'):
+                continue
+            
+            # Check if this is a filename line (ends with .txt and has WARNING/FAILED status)
+            if '.txt' in line and ('WARNING' in line or 'FAILED' in line):
+                # Save previous file if exists
+                if current_file:
+                    files_needing_repair.append({
+                        'file': current_file,
+                        'pdf_file': current_file.replace('_v31.txt', '_o.pdf'),
+                        'issues': current_issues.copy()
+                    })
+                    current_issues = []
+                
+                # Extract filename (first part before status)
+                parts = line.split()
+                current_file = None
+                for part in parts:
+                    if part.endswith('.txt'):
+                        current_file = part
+                        break
+                
+                # Extract issue from same line if present
+                if current_file:
+                    issue_start = line.find(current_file) + len(current_file)
+                    remaining = line[issue_start:].strip()
+                    # Skip status columns
+                    parts_after = remaining.split(maxsplit=2)
+                    if len(parts_after) > 2:
+                        current_issues.append(parts_after[2])
+            elif current_file and line and not line.startswith('File'):
+                # This is a continuation issue line
+                current_issues.append(line)
+        
+        # Save last file
+        if current_file:
+            files_needing_repair.append({
+                'file': current_file,
+                'pdf_file': current_file.replace('_v31.txt', '_o.pdf'),
+                'issues': current_issues.copy()
+            })
+    
+    if not files_needing_repair:
+        print("[INFO] No issues found in verification report")
+        print("[OK] All documents are verified successfully")
+        return
+    
+    print(f"\n[INFO] Found {len(files_needing_repair)} file(s) with issues:")
+    for item in files_needing_repair:
+        print(f"  - {item['file']} ({len(item['issues'])} issue(s))")
+    
+    print("\n[START] Beginning automatic repair process...")
+    repair_files(root_dir, files_needing_repair)
+    
+    print("\n" + "="*80)
+    print("[OK] Repair process complete")
+    print("[INFO] Run Phase 7 (Verify) again to confirm all issues are resolved")
+    print("="*80)
+
 # === INTERACTIVE MENU ===
 def interactive_menu():
     """Interactive menu for user to select phases and verification mode"""
@@ -3073,17 +3165,18 @@ def print_phase_overview():
 def main():
     parser = argparse.ArgumentParser(description='Document Processing Pipeline v31')
     parser.add_argument('--dir', type=str, help='Target directory to process')
-    parser.add_argument('--phase', nargs='+', choices=['directory', 'rename', 'clean', 'convert', 'format', 'gcs_upload', 'verify', 'all'],
+    parser.add_argument('--phase', nargs='+', choices=['directory', 'rename', 'clean', 'convert', 'format', 'gcs_upload', 'verify', 'repair', 'all'],
                        default=None, help='Phases to run (omit for interactive mode)')
     parser.add_argument('--no-verify', action='store_true', help='Skip phase verification prompts')
     parser.add_argument('--force-reupload', action='store_true', help='Force re-upload to GCS and update all headers (use after directory rename)')
     parser.add_argument('--auto-repair', action='store_true', help='Automatically repair files with issues during Phase 7 verification')
+    parser.add_argument('--repair-and-verify', action='store_true', help='Repair all issues and re-verify (same as --phase repair verify)')
     
     args = parser.parse_args()
     
     if not args.dir:
         print("Error: --dir parameter required")
-        print("Usage: python doc-process-v31.py --dir /path/to/directory [--phase directory rename clean convert format gcs_upload verify]")
+        print("Usage: python doc-process-v31.py --dir /path/to/directory [--phase directory rename clean convert format gcs_upload verify repair]")
         sys.exit(1)
     
     root_dir = Path(args.dir)
@@ -3092,8 +3185,13 @@ def main():
         print(f"Error: Directory not found: {root_dir}")
         sys.exit(1)
     
+    # Handle --repair-and-verify shortcut
+    if args.repair_and_verify:
+        phases = ['repair', 'verify']
+        verify_before_phase = False
+        args.auto_repair = True  # Implicit auto-repair mode
     # Determine which phases to run and verification mode
-    if args.phase is None:
+    elif args.phase is None:
         # Interactive mode - ask user
         phases, verify_before_phase = interactive_menu()
     else:
@@ -3103,8 +3201,8 @@ def main():
             phases = ['directory', 'rename', 'clean', 'convert', 'format', 'gcs_upload', 'verify']
         verify_before_phase = not args.no_verify
     
-    # Run preflight checks (skip OCR tools for convert/format/verify/gcs_upload phases)
-    skip_clean_check = all(p in ['convert', 'format', 'verify', 'gcs_upload'] for p in phases)
+    # Run preflight checks (skip OCR tools for convert/format/verify/gcs_upload/repair phases)
+    skip_clean_check = all(p in ['convert', 'format', 'verify', 'gcs_upload', 'repair'] for p in phases)
     if not preflight_checks(skip_clean_check=skip_clean_check, root_dir=root_dir):
         sys.exit(1)
     
@@ -3119,7 +3217,8 @@ def main():
         'convert': phase4_convert,
         'format': phase5_format,
         'gcs_upload': phase6_gcs_upload,
-        'verify': phase7_verify
+        'verify': phase7_verify,
+        'repair': phase8_repair
     }
     
     for phase_name in phases:
