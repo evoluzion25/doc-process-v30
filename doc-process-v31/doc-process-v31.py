@@ -3021,8 +3021,8 @@ def format_single_file(root_dir, base_name):
         raw_body = full_text[body_start_content:footer_start].strip()
         footer = full_text[footer_start:]  # Includes the === line before END
         
-    # Use EXACT v31 prompt from Phase 5
-    prompt = """You are correcting OCR output for a legal document. Your task is to:
+        # Use EXACT v31 prompt from Phase 5
+        prompt = """You are correcting OCR output for a legal document. Your task is to:
 1. Fix OCR errors and preserve legal terminology
 2. CRITICAL: Preserve ALL page markers EXACTLY as they appear: '[BEGIN PDF Page N]' with blank lines before and after
 3. NEVER remove or modify page markers, especially [BEGIN PDF Page 1] - it MUST be preserved
@@ -3042,7 +3042,9 @@ CRITICAL STRUCTURE:
 
 <content for page 2>
 
-DO NOT move markers to the end of content. Keep them at the START."""        # Check if document needs chunking (count pages)
+DO NOT move markers to the end of content. Keep them at the START."""
+        
+        # Check if document needs chunking (count pages)
         page_count = len(re.findall(r'\[BEGIN PDF Page \d+\]', raw_body))
         
         if page_count > 80:
