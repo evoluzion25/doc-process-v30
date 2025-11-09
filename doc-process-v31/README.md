@@ -8,6 +8,18 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## What's New in v31
 
+### Phase 6-7 Suffix Flexibility (November 9, 2025)
+- **Universal suffix support**: Phase 6 (GCS Upload) and Phase 7 (Verify) now handle PDFs and text files with ANY suffix
+- **Automatic detection**: Finds convert files (`*_c.txt`) and format files with any suffix (`*_v31.txt`, `*_gp.txt`, `*_v22.txt`)
+- **Smart base name extraction**: Automatically removes known suffixes (`_o`, `_d`, `_r`, `_a`, `_t`, `_c`, `_v22`, `_v31`, `_gp`) to match files across phases
+- **Backward compatible**: Still supports standard naming conventions while accommodating custom suffixes
+- **Example**: Successfully processes directories with:
+  - PDFs: `20231226_9c1_Hearing_o.pdf` (standard suffix)
+  - Convert: `20231226_9c1_Hearing_c.txt` (standard suffix)
+  - Format: `20231226_9c1_Hearing_gp.txt` (custom Gemini Pro suffix)
+- **Validation**: Header verification checks all detected files regardless of suffix
+- **Use cases**: Supports legacy files, mixed processing versions, and custom workflow suffixes
+
 ### Critical Fixes (November 8, 2025)
 - **Phase 3 OCR Enhancement**: PIL preprocessing with fallback approach for optimal quality
   - **STEP 1**: Try fast OCR first (--force-ocr, ~1 sec/page)
@@ -209,36 +221,106 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## Quick Start
 
+### CRITICAL: Python Environment Setup
+
+**ALL DEPENDENCIES ARE ALREADY INSTALLED** in the main virtual environment:
+- **Location**: `E:\00_dev_1\.venv\`
+- **Python Executable**: `E:\00_dev_1\.venv\Scripts\python.exe`
+- **Installed Packages**: PyMuPDF (fitz), google-generativeai, google-cloud-vision, google-cloud-storage, PyPDF2, Pillow, ocrmypdf
+
+**DO NOT create new venv or install packages** - everything is ready to use.
+
 ### Run Full Pipeline
 
 ```powershell
-python doc-process-v31.py --dir "E:\path\to\project" --phase all
+# ALWAYS use the full path to the venv Python executable:
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "G:\Shared drives\12 - legal\a0_fremont_lg\_reedy-v-fremont_all\05_evidence\01_fremont\09_9c1_23-0406-ck\05_Court_Staff" --phase all
 ```
 
 ### Run Single Phase
 
 ```powershell
 # Phase 1: Directory (organize PDFs)
-python doc-process-v31.py --dir "E:\path\to\project" --phase directory
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase directory
 
 # Phase 2: Rename (extract metadata, clean names)
-python doc-process-v31.py --dir "E:\path\to\project" --phase rename
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase rename
 
 # Phase 3: Clean (OCR at 600 DPI)
-python doc-process-v31.py --dir "E:\path\to\project" --phase clean
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase clean
 
 # Phase 4: Convert (extract text)
-python doc-process-v31.py --dir "E:\path\to\project" --phase convert
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase convert
 
 # Phase 5: Format (clean text with AI)
-python doc-process-v31.py --dir "E:\path\to\project" --phase format
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase format
 
-# Phase 6: Verify (compare results)
-python doc-process-v31.py --dir "E:\path\to\project" --phase verify
+# Phase 6: GCS Upload (upload PDFs and insert URLs)
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase gcs_upload
 
-# Phase 7: GCS Upload (upload PDFs and insert URLs)
-python doc-process-v31.py --dir "E:\path\to\project" --phase gcs_upload
+# Phase 7: Verify (compare results)
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --phase verify
 ```
+
+### After Directory Rename
+
+If you renamed a directory after processing, use `--force-reupload` to:
+1. Detect old GCS directory from existing text file headers
+2. Delete entire old GCS directory
+3. Upload all PDFs to new GCS directory
+4. Update all text file headers with new directory name and URLs
+
+```powershell
+# IMPORTANT: Run from the NEW (renamed) directory location
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\renamed-project" --phase gcs_upload --force-reupload
+
+# Then re-verify with updated information
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\renamed-project" --phase verify
+```
+
+**What `--force-reupload` does**:
+- Reads first text file to detect old directory name from `PDF DIRECTORY:` header
+- Deletes ALL files in old GCS path: `gs://fremont-1/docs/<old-folder-name>/`
+- Uploads ALL PDFs to new GCS path: `gs://fremont-1/docs/<new-folder-name>/`
+- Updates `PDF DIRECTORY:` header in all `04_doc-convert/*_c.txt` files
+- Updates `PDF DIRECTORY:` header in all `05_doc-format/*_v31.txt` files
+- Updates `PDF PUBLIC LINK:` with correct GCS URLs pointing to new directory
+- Essential after renaming directories to keep GCS storage and headers synchronized
+
+**Example**:
+```powershell
+# Before: G:\...\05_Court_Staff
+# After rename: G:\...\05_Court-Staff-9c1
+
+# Run with --force-reupload from NEW location:
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "G:\...\05_Court-Staff-9c1" --phase gcs_upload --force-reupload
+
+# Output will show:
+# [DETECT] Old directory: 05_Court_Staff
+# [DELETE OLD] Removing old GCS directory: gs://fremont-1/docs/05_Court_Staff/
+# [DELETED] docs/05_Court_Staff/file1.pdf
+# [DELETED] docs/05_Court_Staff/file2.pdf
+# [UPLOAD] file1.pdf → gs://fremont-1/docs/05_Court-Staff-9c1/
+# [OK] Updated header in: file1_c.txt
+# [OK] Updated header in: file1_v31.txt
+```
+
+### Using VS Code Tasks (Recommended)
+
+VS Code tasks are pre-configured in `.vscode/tasks.json`:
+1. Press `Ctrl+Shift+P`
+2. Type "Tasks: Run Task"
+3. Select "Doc Process v31: Full Pipeline"
+4. Enter project directory when prompted
+
+Available tasks:
+- `Doc Process v31: Full Pipeline`
+- `Doc Process v31: OCR Only`
+- `Doc Process v31: Extract Only`
+- `Doc Process v31: Format Only`
+- `Doc Process v31: Verify Only`
+- `Doc Process v31: GCS Upload Only`
+- `Doc Process v31: OCR+Extract+Format`
 
 ## File Suffix Flow
 
@@ -467,6 +549,106 @@ To migrate:
 3. Run - no other changes needed
 
 ## Troubleshooting
+
+### Issue: ModuleNotFoundError: No module named 'fitz'
+
+**DO NOT install packages** - they are already installed in `E:\00_dev_1\.venv\`
+
+**Solution**: Use the full path to the venv Python executable:
+```powershell
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "path" --phase all
+```
+
+**Wrong**: `python doc-process-v31.py` (uses system Python without packages)
+
+## After Directory Rename - Comprehensive Reupload
+
+When you rename a directory locally and need to synchronize with GCS, use the `--force-reupload` flag to trigger a comprehensive 6-step process:
+
+### What --force-reupload Does:
+
+1. **Creates Directory Structure Documentation** (`y_logs/DIRECTORY_STRUCTURE_MANIFEST.txt`)
+   - Records root directory, folder name, PDF directory path
+   - Documents GCS bucket and full path for future reference
+
+2. **Creates Document Catalog** (`y_logs/DOCUMENT_CATALOG.txt`)
+   - Lists all documents in each pipeline stage (03, 04, 05 directories)
+   - Shows GCS target path and public URL for each document
+   - Identifies missing convert or format files
+
+3. **Verifies GCS Directory Structure**
+   - Checks if GCS directory already exists
+   - Prepares for upload or deletion operations
+
+4. **Manages GCS Uploads**
+   - Detects old GCS directory from existing text file headers
+   - **Deletes entire old GCS directory** (all files with old prefix)
+   - Uploads all PDFs to new GCS location
+   - Makes all files publicly accessible
+   - Creates upload log (`y_logs/UPLOAD_LOG_YYYYMMDD_HHMMSS.txt`)
+
+5. **Updates Headers in Convert and Format Files**
+   - Updates `PDF DIRECTORY:` line in all `04_doc-convert/*_c.txt` files
+   - Updates `PDF PUBLIC LINK:` line in all `04_doc-convert/*_c.txt` files
+   - Updates `PDF DIRECTORY:` line in all `05_doc-format/*_v31.txt` files  
+   - Updates `PDF PUBLIC LINK:` line in all `05_doc-format/*_v31.txt` files
+   - Ensures all headers reflect new directory structure
+
+6. **Verifies Header Consistency** (`y_logs/HEADER_VERIFICATION_YYYYMMDD_HHMMSS.txt`)
+   - Checks every convert and format file
+   - Verifies `PDF DIRECTORY:` matches expected path
+   - Verifies `PDF PUBLIC LINK:` matches expected GCS URL
+   - Reports mismatches and missing files
+
+### Example Workflow:
+
+```powershell
+# Scenario: You renamed directory from 09_Pleadings_plaintiff to 01_Pleadings_plaintiff
+
+# Run force-reupload (will detect old directory 09, delete it, upload to new 01)
+E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py `
+    --dir "G:\Shared drives\...\01_Pleadings_plaintiff" `
+    --phase gcs_upload verify `
+    --force-reupload `
+    --no-verify
+
+# Check logs to verify:
+# - y_logs/DIRECTORY_STRUCTURE_MANIFEST.txt (structure documentation)
+# - y_logs/DOCUMENT_CATALOG.txt (complete file inventory)
+# - y_logs/UPLOAD_LOG_YYYYMMDD_HHMMSS.txt (upload results)
+# - y_logs/HEADER_VERIFICATION_YYYYMMDD_HHMMSS.txt (header consistency check)
+```
+
+### What Gets Updated:
+
+**Before force-reupload:**
+```
+PDF DIRECTORY: 09_Pleadings_plaintiff
+PDF PUBLIC LINK: https://storage.cloud.google.com/fremont-1/docs/09_Pleadings_plaintiff/20230807_9c1_FIC_Petition_Umpire_o.pdf
+```
+
+**After force-reupload:**
+```
+PDF DIRECTORY: 01_Pleadings_plaintiff
+PDF PUBLIC LINK: https://storage.cloud.google.com/fremont-1/docs/01_Pleadings_plaintiff/20230807_9c1_FIC_Petition_Umpire_o.pdf
+```
+
+**Old GCS directory deleted:**
+- `gs://fremont-1/docs/09_Pleadings_plaintiff/` → Removed (all 30+ files deleted)
+
+**New GCS directory created:**
+- `gs://fremont-1/docs/01_Pleadings_plaintiff/` → Uploaded (all 30 PDFs with public access)
+
+### Verification Logs:
+
+All operations generate detailed logs in `y_logs/`:
+1. `DIRECTORY_STRUCTURE_MANIFEST.txt` - Directory paths and GCS configuration
+2. `DOCUMENT_CATALOG.txt` - Complete inventory of all files in pipeline
+3. `UPLOAD_LOG_YYYYMMDD_HHMMSS.txt` - Upload results (success/fail for each file)
+4. `HEADER_VERIFICATION_YYYYMMDD_HHMMSS.txt` - Header consistency report (mismatches flagged)
+
+These logs provide full audit trail for directory rename operations.
+**Right**: `E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py`
 
 ### Issue: Files failing due to API rate limits
 
