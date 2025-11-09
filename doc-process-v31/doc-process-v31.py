@@ -857,18 +857,27 @@ def _process_clean_pdf(pdf_path, clean_dir):
         if not success:
             print(f"  [WARN] Fast OCR failed, will try preprocessing")
         else:
-            # Verify OCR quality - check if text extraction works
+            # Verify OCR quality - check if header text was captured
             try:
                 doc = fitz.open(str(output_path))
-                page1_text = doc[0].get_text()
+                page1_text = doc[0].get_text().upper()
                 doc.close()
                 
-                # If page 1 has reasonable text, OCR succeeded
-                if len(page1_text) > 100:
-                    print(f"  → Fast OCR successful ({len(page1_text)} chars on page 1)")
+                # Check for header keywords that indicate successful OCR of page headers
+                # Many legal docs have underlined headers that Tesseract misses
+                has_header_keywords = any(keyword in page1_text for keyword in [
+                    'PETITION', 'MOTION', 'BRIEF', 'COMPLAINT', 'ANSWER', 
+                    'RESPONSE', 'OBJECTION', 'ORDER', 'AMENDED'
+                ])
+                
+                if len(page1_text) > 100 and has_header_keywords:
+                    print(f"  → Fast OCR successful ({len(page1_text)} chars, header keywords found)")
                     success = True
                 else:
-                    print(f"  [WARN] Fast OCR produced little text ({len(page1_text)} chars), trying preprocessing")
+                    if len(page1_text) < 100:
+                        print(f"  [WARN] Fast OCR produced little text ({len(page1_text)} chars), trying preprocessing")
+                    else:
+                        print(f"  [WARN] Fast OCR missing header keywords, trying preprocessing")
                     success = False
                     output_path.unlink()  # Remove poor quality output
             except Exception as e:
