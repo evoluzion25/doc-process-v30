@@ -1931,16 +1931,17 @@ def phase6_gcs_upload(root_dir, force_reupload=False):
     
     # STEP 3: Verify or create GCS directory structure AND DELETE ALL EXISTING FILES
     print("\n[STEP 3] Verifying GCS directory structure...")
+    deleted_count = 0
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(GCS_BUCKET)
         
         # Check if GCS directory exists and delete all files in it
-        print(f"[DELETE] Removing all existing files in gs://{GCS_BUCKET}/{gcs_prefix}/")
+        print(f"[DELETE] Checking for existing files in gs://{GCS_BUCKET}/{gcs_prefix}/")
         existing_blobs = list(storage_client.list_blobs(GCS_BUCKET, prefix=gcs_prefix + '/'))
         
         if existing_blobs:
-            deleted_count = 0
+            print(f"[DELETE] Removing {len(existing_blobs)} existing file(s)...")
             for blob in existing_blobs:
                 blob.delete()
                 deleted_count += 1
@@ -2151,6 +2152,7 @@ def phase6_gcs_upload(root_dir, force_reupload=False):
                 f.write(f"  Size: {item['size']:,} bytes\n\n")
     
     print(f"\n[OK] Upload log saved: {upload_log_path.name}")
+    print(f"[SUMMARY] Deleted {deleted_count} existing file(s) from GCS")
     print(f"[SUMMARY] Uploaded {uploaded_count}/{len(pdf_files)} PDFs to GCS")
     print(f"[SUMMARY] Updated {convert_updated_count} convert files (04_doc-convert)")
     print(f"[SUMMARY] Updated {format_updated_count} format files (05_doc-format)")
