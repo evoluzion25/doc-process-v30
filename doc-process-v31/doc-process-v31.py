@@ -890,14 +890,31 @@ def _process_clean_pdf(pdf_path, clean_dir):
         
         doc.close()
         
-        # Create PDF from preprocessed images
+        # Create PDF from preprocessed images with correct page dimensions
+        # Original PDF standard: 8.5x11" = 612x792 points at 72 DPI
+        # We rendered at 3x zoom (864 DPI effective) and saved at 600 DPI
         new_doc = fitz.open()
+        
         for img_path in temp_images:
-            img_doc = fitz.open(str(img_path))
-            pdf_bytes = img_doc.convert_to_pdf()
-            img_pdf = fitz.open("pdf", pdf_bytes)
-            new_doc.insert_pdf(img_pdf)
-            img_doc.close()
+            # Open image to get dimensions
+            img = Image.open(str(img_path))
+            img_width, img_height = img.size
+            img.close()
+            
+            # Images were rendered at 3x zoom from 72 DPI = 216 DPI effective
+            # But saved with 600 DPI metadata, so actual size needs correction
+            # Convert from pixels to PDF points (72 DPI)
+            # Formula: points = pixels * 72 / actual_dpi
+            # Since we rendered at 3x (effective 216 DPI), divide by 3
+            page_width = img_width / 3.0
+            page_height = img_height / 3.0
+            
+            # Create new page with correct dimensions (in points)
+            page = new_doc.new_page(width=page_width, height=page_height)
+            
+            # Insert image to fill the page
+            page_rect = page.rect
+            page.insert_image(page_rect, filename=str(img_path))
         
         new_doc.save(str(temp_preprocessed))
         new_doc.close()

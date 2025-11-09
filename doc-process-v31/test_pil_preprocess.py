@@ -65,14 +65,26 @@ doc.close()
 
 print(f"\nStep 2: Creating preprocessed PDF from {len(temp_images)} images...")
 
-# Create PDF from preprocessed images
+# Create PDF from preprocessed images with correct page dimensions
 new_doc = fitz.open()
+
 for img_path in temp_images:
-    img_doc = fitz.open(img_path)
-    pdf_bytes = img_doc.convert_to_pdf()
-    img_pdf = fitz.open("pdf", pdf_bytes)
-    new_doc.insert_pdf(img_pdf)
-    img_doc.close()
+    # Open image to get dimensions
+    img = Image.open(str(img_path))
+    img_width, img_height = img.size
+    img.close()
+    
+    # Images were rendered at 3x zoom from 72 DPI = 216 DPI effective
+    # Convert back to PDF points (72 DPI)
+    page_width = img_width / 3.0
+    page_height = img_height / 3.0
+    
+    # Create new page with correct dimensions
+    page = new_doc.new_page(width=page_width, height=page_height)
+    
+    # Insert image to fill the page
+    page_rect = page.rect
+    page.insert_image(page_rect, filename=str(img_path))
 
 new_doc.save(output_pdf)
 new_doc.close()
