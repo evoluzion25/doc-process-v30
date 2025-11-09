@@ -833,28 +833,92 @@ def _enhance_page1_header(pdf_path, output_path):
 
 def _process_clean_pdf(pdf_path, clean_dir):
     """Process a single PDF for Phase 3 (Clean). Runs in parallel worker process."""
+    from PIL import Image, ImageEnhance
+    import io
+    
     base_name = pdf_path.stem[:-2]  # Remove _r
     output_path = clean_dir / f"{base_name}_o.pdf"
-    temp_cleaned = None
+    temp_preprocessed = None
     compressed_path = None
     
     try:
-        # STEP 1: Skip metadata cleaning for now - directly OCR original
-        print(f"[STEP 1] Skipping metadata cleaning (causes InputFileError), using original PDF")
-        ocr_input = str(pdf_path)
-        temp_cleaned = None
+        # STEP 1: Preprocess PDF - Remove underlines to improve OCR
+        print(f"[STEP 1] Preprocessing PDF (remove underlines, enhance contrast)...")
+        temp_preprocessed = clean_dir / f"{base_name}_preprocessed.pdf"
         
-        # STEP 2: OCR the original PDF
-        print(f"[STEP 2] Running OCR (600 DPI) on original file...")
+        doc = fitz.open(str(pdf_path))
+        temp_images = []
+        
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            
+            # Render at high DPI for OCR
+            mat = fitz.Matrix(3.0, 3.0)  # ~864 DPI
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            
+            # Convert to PIL Image
+            img_data = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_data))
+            
+            # Enhance for OCR: grayscale + contrast + remove horizontal lines
+            img_gray = img.convert('L')
+            enhancer = ImageEnhance.Contrast(img_gray)
+            img_enhanced = enhancer.enhance(2.0)
+            
+            # Remove horizontal lines (underlines)
+            width, height = img_enhanced.size
+            pixel_data = img_enhanced.load()
+            
+            if pixel_data is not None:
+                for y in range(height):
+                    line_length = 0
+                    for x in range(width):
+                        pixel_val = pixel_data[x, y]
+                        if isinstance(pixel_val, (int, float)) and pixel_val < 128:
+                            line_length += 1
+                        else:
+                            if line_length > width * 0.3:  # Long horizontal line
+                                for xx in range(x - line_length, x):
+                                    if 0 <= xx < width:
+                                        pixel_data[xx, y] = 255
+                            line_length = 0
+            
+            # Save temp image
+            temp_img = clean_dir / f"{base_name}_temp_page_{page_num + 1}.png"
+            img_enhanced.save(str(temp_img), dpi=(600, 600))
+            temp_images.append(temp_img)
+        
+        doc.close()
+        
+        # Create PDF from preprocessed images
+        new_doc = fitz.open()
+        for img_path in temp_images:
+            img_doc = fitz.open(str(img_path))
+            pdf_bytes = img_doc.convert_to_pdf()
+            img_pdf = fitz.open("pdf", pdf_bytes)
+            new_doc.insert_pdf(img_pdf)
+            img_doc.close()
+        
+        new_doc.save(str(temp_preprocessed))
+        new_doc.close()
+        
+        print(f"  → Preprocessed {len(temp_images)} pages")
+        
+        # Clean up temp images
+        for img_path in temp_images:
+            if img_path.exists():
+                img_path.unlink()
+        
+        # STEP 2: OCR preprocessed PDF
+        print(f"[STEP 2] Running OCR (600 DPI) on preprocessed file...")
         
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
 
         # Use simple --force-ocr (most reliable)
-        # Phase 4 (Google Cloud Vision) will capture any text missed here
         cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa',
                '--oversample', '600',
-               ocr_input, str(output_path)]
+               str(temp_preprocessed), str(output_path)]
         
         success, out = run_subprocess(cmd)
         
@@ -863,35 +927,16 @@ def _process_clean_pdf(pdf_path, clean_dir):
             print(f"  [ERROR] ocrmypdf failed: {out[:200] if out else 'No error output'}")
         
         if not success:
-            # Fallback to Ghostscript + ocrmypdf
-            print(f"[STEP 2b] OCR failed, trying Ghostscript flatten + OCR...")
-            temp_pdf = clean_dir / f"{base_name}_temp.pdf"
-            
-            try:
-                gs_cmd = ['gswin64c', '-sDEVICE=pdfimage32', '-o', 
-                         str(temp_pdf), ocr_input]
-                gs_success, _ = run_subprocess(gs_cmd)
-                
-                if gs_success and temp_pdf.exists():
-                    # Try OCR on flattened PDF
-                    success, _ = run_subprocess(cmd[:-2] + [str(temp_pdf), str(output_path)])
-                    if temp_pdf.exists():
-                        temp_pdf.unlink()
-                else:
-                    # Last resort: just copy the file
-                    print(f"[STEP 2c] Fallback: copying cleaned file without additional OCR")
-                    shutil.copy2(ocr_input, str(output_path))
-                    success = True
-            except Exception as e:
-                print(f"[STEP 2c] Fallback: copying cleaned file without additional OCR")
-                shutil.copy2(ocr_input, str(output_path))
-                success = True
+            # Fallback: copy original without OCR
+            print(f"[STEP 2b] Fallback: copying preprocessed file without OCR")
+            shutil.copy2(str(temp_preprocessed), str(output_path))
+            success = True
         
-        # STEP 3: Clean up temp metadata file AFTER all OCR attempts
-        if temp_cleaned and temp_cleaned.exists():
-            print(f"[STEP 3] Deleting temp metadata file: {temp_cleaned.name}")
+        # STEP 3: Clean up temp preprocessed file
+        if temp_preprocessed and temp_preprocessed.exists():
+            print(f"[STEP 3] Deleting temp preprocessed file: {temp_preprocessed.name}")
             try:
-                temp_cleaned.unlink()
+                temp_preprocessed.unlink()
             except Exception:
                 pass  # Ignore cleanup errors
         
@@ -948,9 +993,9 @@ def _process_clean_pdf(pdf_path, clean_dir):
         return ProcessingResult(file_name=pdf_path.name, status='FAILED', error=str(e))
     finally:
         # Always cleanup ALL temp files
-        if temp_cleaned and temp_cleaned.exists():
+        if temp_preprocessed and temp_preprocessed.exists():
             try:
-                temp_cleaned.unlink()
+                temp_preprocessed.unlink()
             except Exception:
                 pass
         if compressed_path and compressed_path.exists():
@@ -958,11 +1003,11 @@ def _process_clean_pdf(pdf_path, clean_dir):
                 compressed_path.unlink()
             except Exception:
                 pass
-        # Also cleanup Ghostscript flatten temp file
+        # Also cleanup temp images
         try:
-            temp_pdf = clean_dir / f"{base_name}_temp.pdf"
-            if temp_pdf.exists():
-                temp_pdf.unlink()
+            for temp_img in clean_dir.glob(f"{base_name}_temp_page_*.png"):
+                if temp_img.exists():
+                    temp_img.unlink()
         except Exception:
             pass
 
