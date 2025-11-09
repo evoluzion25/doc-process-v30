@@ -317,20 +317,61 @@ E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\projec
 E:\00_dev_1\.venv\Scripts\python.exe doc-process-v31.py --dir "E:\path\to\project" --repair-and-verify
 ```
 
+**Intelligent Repair Strategies (Phase 8)**:
+
+Phase 8 analyzes each issue and applies the appropriate repair strategy:
+
+**STRATEGY 1: Low Accuracy Issues** (< 70% content match)
+- **Critical Accuracy (<50%)**:
+  - Reprocess PDF with enhanced OCR (1200 DPI, background removal, deskewing)
+  - Re-extract text with Google Vision API
+  - Reformat with Gemini AI
+  - *Use case*: Scanned documents with poor OCR quality, rotated pages, dark backgrounds
+  
+- **Moderate Accuracy (50-69%)**:
+  - Re-extract text with Google Vision API (improved extraction)
+  - Reformat with Gemini AI
+  - *Use case*: Text extraction issues, missing content, garbled characters
+  
+- **Borderline Accuracy (70-79%)**:
+  - Reformat with Gemini AI only
+  - *Use case*: Minor OCR errors, formatting issues
+
+**STRATEGY 2: Page Marker Issues**
+- Missing or malformed `[BEGIN PDF Page N]` markers
+- Action: Reformat with Gemini to restore proper page markers
+- *Use case*: Formatting corruption, missing page boundaries
+
+**STRATEGY 3: Header Issues**
+- Missing or incorrect `PDF DIRECTORY` or `PDF PUBLIC LINK` headers
+- Action: Update headers in place (no reprocessing needed)
+- *Use case*: Metadata inconsistencies after folder moves
+
+**STRATEGY 4: GCS URL Issues**
+- Inaccessible or missing public URLs
+- Action: Re-upload PDF to Google Cloud Storage and update headers
+- *Use case*: Failed uploads, deleted files, bucket configuration changes
+
 **What Phase 8 (Repair) Does**:
 1. Reads most recent `VERIFICATION_REPORT_v31_*.txt`
 2. Parses "FILES WITH ISSUES" section to identify problem files
-3. Analyzes each issue to determine repair strategy:
-   - **Content issues** (low accuracy, missing markers) → Re-run Phase 5 (Format)
-   - **Header issues** (missing directory/URL) → Update headers in place
-   - **GCS issues** (inaccessible URLs) → Re-run Phase 6 (GCS Upload)
-4. Executes repairs automatically for all files
-5. Outputs repair summary
+3. Analyzes each issue to determine root cause and optimal repair strategy
+4. Executes repairs automatically with detailed progress logging
+5. Outputs repair summary showing what was fixed
+
+**Enhanced OCR Settings** (for critical accuracy issues):
+- 1200 DPI oversample (vs. standard 600 DPI)
+- Force OCR on all pages
+- Automatic deskewing and rotation correction
+- Background removal for scanned documents
+- Lower compression (optimize=1) for maximum text quality
+- JPEG quality 95% (vs. standard 85%)
 
 **--repair-and-verify Flag**:
 - Combines Phase 8 (Repair) + Phase 7 (Verify) in one command
 - Automatically fixes issues then generates new verification report
 - Useful for iterative quality improvement
+- Reports show before/after accuracy metrics
 
 ### After Directory Rename
 

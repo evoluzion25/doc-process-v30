@@ -2718,7 +2718,7 @@ def phase7_verify(root_dir, auto_repair=False):
     report_data['verify'] = verification_results
 
 def repair_files(root_dir, files_needing_repair):
-    """Attempt to repair files with issues"""
+    """Attempt to repair files with issues using intelligent repair strategies"""
     print("\n" + "="*80)
     print("REPAIR PROCESS STARTING")
     print("="*80)
@@ -2731,93 +2731,398 @@ def repair_files(root_dir, files_needing_repair):
         print(f"\nRepairing: {txt_file}")
         print(f"Issues detected: {len(issues)}")
         
-        # Determine what repairs are needed
-        needs_reformatting = any('header' in issue.lower() or 'marker' in issue.lower() or 'content' in issue.lower() for issue in issues)
-        needs_gcs_upload = any('url' in issue.lower() or 'gcs' in issue.lower() or 'accessible' in issue.lower() for issue in issues)
+        # Parse issues to determine repair strategy
+        has_low_accuracy = False
+        accuracy_value = None
+        has_header_issues = False
+        has_marker_issues = False
+        has_url_issues = False
+        
+        for issue in issues:
+            issue_lower = issue.lower()
+            
+            # Check for low accuracy
+            if 'accuracy' in issue_lower or 'similarity' in issue_lower:
+                has_low_accuracy = True
+                # Extract accuracy percentage
+                import re
+                match = re.search(r'(\d+)%', issue)
+                if match:
+                    accuracy_value = int(match.group(1))
+            
+            # Check for specific issue types
+            if 'header' in issue_lower or 'directory' in issue_lower:
+                has_header_issues = True
+            if 'marker' in issue_lower or 'page marker' in issue_lower:
+                has_marker_issues = True
+            if 'url' in issue_lower or 'gcs' in issue_lower or 'accessible' in issue_lower:
+                has_url_issues = True
         
         base_name = txt_file.replace('_v31.txt', '')
         
-        if needs_reformatting:
-            print("  → Re-running Phase 5 (Format) to fix content issues...")
-            try:
-                # Find the _c.txt file to reformat
-                convert_dir = root_dir / "04_doc-convert"
-                convert_file = convert_dir / f"{base_name}_c.txt"
-                
-                if convert_file.exists():
-                    formatted_dir = root_dir / "05_doc-format"
-                    formatted_file = formatted_dir / f"{base_name}_v31.txt"
-                    
-                    # Re-run formatting on this single file
-                    print(f"    Processing: {convert_file.name}")
-                    format_single_file(convert_file, formatted_file, root_dir)
-                    print(f"    [OK] Reformatted: {formatted_file.name}")
-                else:
-                    print(f"    [WARN] Cannot find converted file: {convert_file.name}")
-            except Exception as e:
-                print(f"    [FAIL] Formatting error: {e}")
+        # STRATEGY 1: Low accuracy issues - reprocess PDF with enhanced OCR
+        if has_low_accuracy:
+            print(f"  [STRATEGY] Low accuracy detected ({accuracy_value}%)")
+            
+            if accuracy_value and accuracy_value < 50:
+                print(f"  [ACTION] Critical accuracy (<50%) - Reprocessing PDF with enhanced OCR")
+                # Re-run Phase 3 (Clean) with enhanced settings for this specific file
+                reprocess_pdf_enhanced(root_dir, base_name)
+                # Re-run Phase 4 (Convert) to extract text again
+                reconvert_single_file(root_dir, base_name)
+                # Re-run Phase 5 (Format) to regenerate formatted text
+                format_single_file(root_dir, base_name)
+            elif accuracy_value and accuracy_value < 70:
+                print(f"  [ACTION] Moderate accuracy (<70%) - Regenerating text extraction")
+                # Re-run Phase 4 (Convert) to re-extract text
+                reconvert_single_file(root_dir, base_name)
+                # Re-run Phase 5 (Format) to regenerate formatted text
+                format_single_file(root_dir, base_name)
+            else:
+                print(f"  [ACTION] Borderline accuracy - Reformatting only")
+                # Just reformat with Gemini
+                format_single_file(root_dir, base_name)
         
-        if needs_gcs_upload:
-            print("  → Re-running Phase 6 (GCS Upload) to fix URL issues...")
-            try:
-                clean_dir = root_dir / "03_doc-clean"
-                pdf_path = clean_dir / pdf_file
-                
-                if pdf_path.exists():
-                    # Re-upload this single PDF
-                    upload_single_pdf_to_gcs(pdf_path, root_dir)
-                    
-                    # Update headers in formatted file
-                    formatted_dir = root_dir / "05_doc-format"
-                    formatted_file = formatted_dir / f"{base_name}_v31.txt"
-                    if formatted_file.exists():
-                        update_headers_single_file(formatted_file, root_dir)
-                        print(f"    [OK] Updated headers in: {formatted_file.name}")
-                else:
-                    print(f"    [WARN] Cannot find PDF: {pdf_path.name}")
-            except Exception as e:
-                print(f"    [FAIL] Upload error: {e}")
+        # STRATEGY 2: Marker issues without low accuracy - just reformat
+        elif has_marker_issues:
+            print(f"  [STRATEGY] Page marker issues - Reformatting text")
+            format_single_file(root_dir, base_name)
+        
+        # STRATEGY 3: Header issues - update headers only
+        elif has_header_issues and not has_url_issues:
+            print(f"  [STRATEGY] Header issues - Updating headers only")
+            update_headers_single_file(root_dir, base_name)
+        
+        # STRATEGY 4: URL issues - re-upload to GCS
+        elif has_url_issues:
+            print(f"  [STRATEGY] GCS URL issues - Re-uploading to cloud storage")
+            upload_single_pdf_to_gcs(root_dir, base_name)
+            update_headers_single_file(root_dir, base_name)
+        
+        # FALLBACK: Reformat if unclear
+        else:
+            print(f"  [STRATEGY] General issues - Reformatting text")
+            format_single_file(root_dir, base_name)
     
     print("\n[OK] Repair process complete")
-    print("Run Phase 7 (Verify) again to confirm all issues are resolved")
+    print("[INFO] Run Phase 7 (Verify) again to confirm all issues are resolved")
 
-def format_single_file(convert_file, formatted_file, root_dir):
+def reprocess_pdf_enhanced(root_dir, base_name):
+    """Reprocess PDF with enhanced OCR settings for low accuracy issues"""
+    print(f"    [OCR] Reprocessing with enhanced settings...")
+    
+    rename_dir = root_dir / "02_doc-renamed"
+    clean_dir = root_dir / "03_doc-clean"
+    
+    pdf_renamed = rename_dir / f"{base_name}_r.pdf"
+    pdf_clean = clean_dir / f"{base_name}_o.pdf"
+    
+    if not pdf_renamed.exists():
+        print(f"    [ERROR] Source PDF not found: {pdf_renamed}")
+        return
+    
+    try:
+        import subprocess
+        import fitz  # PyMuPDF
+        
+        # Step 1: Clean metadata with PyMuPDF
+        temp_clean = clean_dir / f"{base_name}_temp.pdf"
+        doc = fitz.open(pdf_renamed)
+        doc.set_metadata({})  # Clear all metadata
+        doc.save(temp_clean, garbage=4, deflate=True)
+        doc.close()
+        
+        # Step 2: Enhanced OCR with higher DPI and quality settings
+        print(f"    [OCR] Running enhanced OCR (1200 DPI)...")
+        cmd = [
+            "ocrmypdf",
+            "--force-ocr",           # Force OCR even if text exists
+            "--deskew",              # Fix rotation
+            "--clean",               # Clean artifacts
+            "--rotate-pages",        # Auto-rotate pages
+            "--remove-background",   # Remove background
+            "--optimize", "1",       # Lower optimization for quality
+            "--oversample", "1200",  # Higher DPI for better quality
+            "--jpeg-quality", "95",  # Higher JPEG quality
+            "--output-type", "pdfa", # PDF/A format
+            str(temp_clean),
+            str(pdf_clean)
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        
+        if result.returncode == 0:
+            print(f"    [OK] Enhanced OCR complete: {pdf_clean.name}")
+            temp_clean.unlink()  # Remove temp file
+        else:
+            print(f"    [WARN] OCR had issues: {result.stderr}")
+            # Use temp file as fallback
+            if temp_clean.exists():
+                temp_clean.rename(pdf_clean)
+    
+    except Exception as e:
+        print(f"    [ERROR] Enhanced OCR failed: {e}")
+        # Fallback: copy original if nothing else worked
+        if not pdf_clean.exists() and pdf_renamed.exists():
+            import shutil
+            shutil.copy2(pdf_renamed, pdf_clean)
+
+def reconvert_single_file(root_dir, base_name):
+    """Re-extract text from PDF using Google Vision API"""
+    print(f"    [CONVERT] Re-extracting text with Google Vision...")
+    
+    clean_dir = root_dir / "03_doc-clean"
+    convert_dir = root_dir / "04_doc-convert"
+    
+    pdf_path = clean_dir / f"{base_name}_o.pdf"
+    txt_path = convert_dir / f"{base_name}_c.txt"
+    
+    if not pdf_path.exists():
+        print(f"    [ERROR] Cleaned PDF not found: {pdf_path}")
+        return
+    
+    try:
+        # Check file size - use PyMuPDF if >35MB
+        file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
+        
+        if file_size_mb > 35:
+            print(f"    [INFO] Large file ({file_size_mb:.1f}MB) - using PyMuPDF extraction")
+            import fitz
+            doc = fitz.open(pdf_path)
+            
+            all_text = []
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                text = page.get_text()
+                all_text.append(f"\n\n[BEGIN PDF Page {page_num + 1}]\n\n{text}")
+            
+            doc.close()
+            extracted_text = ''.join(all_text)
+        
+        else:
+            print(f"    [INFO] Using Google Vision API for extraction")
+            # Use Google Vision in 5-page batches
+            extracted_text = extract_text_with_vision(pdf_path)
+        
+        # Add document header template
+        header = f"""§§ DOCUMENT INFORMATION §§
+
+DOCUMENT NUMBER: TBD
+DOCUMENT NAME: {base_name}
+ORIGINAL PDF NAME: {base_name}_o.pdf
+PDF DIRECTORY: {root_dir.name}
+PDF PUBLIC LINK: TBD
+TOTAL PAGES: {extracted_text.count('[BEGIN PDF Page')}
+
+=====================================================================
+BEGINNING OF PROCESSED DOCUMENT
+=====================================================================
+"""
+        
+        footer = """
+=====================================================================
+END OF PROCESSED DOCUMENT
+=====================================================================
+"""
+        
+        full_text = header + extracted_text + footer
+        
+        # Write converted text
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write(full_text)
+        
+        print(f"    [OK] Text re-extracted: {txt_path.name}")
+    
+    except Exception as e:
+        print(f"    [ERROR] Text extraction failed: {e}")
+
+def extract_text_with_vision(pdf_path):
+    """Extract text using Google Vision API in batches"""
+    import fitz
+    from google.cloud import vision
+    import io
+    
+    client = vision.ImageAnnotatorClient()
+    doc = fitz.open(pdf_path)
+    
+    all_text = []
+    batch_size = 5
+    
+    for batch_start in range(0, len(doc), batch_size):
+        batch_end = min(batch_start + batch_size, len(doc))
+        
+        for page_num in range(batch_start, batch_end):
+            page = doc[page_num]
+            pix = page.get_pixmap(dpi=300)
+            img_bytes = pix.tobytes("png")
+            
+            image = vision.Image(content=img_bytes)
+            response = client.text_detection(image=image)
+            
+            if response.text_annotations:
+                page_text = response.text_annotations[0].description
+            else:
+                page_text = page.get_text()  # Fallback to PyMuPDF
+            
+            all_text.append(f"\n\n[BEGIN PDF Page {page_num + 1}]\n\n{page_text}")
+    
+    doc.close()
+    return ''.join(all_text)
+
+def format_single_file(root_dir, base_name):
     """Format a single converted file (for repair)"""
-    # This is a simplified version of phase5_format for single file processing
-    with open(convert_file, 'r', encoding='utf-8') as f:
-        text = f.read()
+    print(f"    [FORMAT] Reformatting with Gemini...")
     
-    # Apply same formatting as Phase 5
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(MODEL_NAME)
+    convert_dir = root_dir / "04_doc-convert"
+    format_dir = root_dir / "05_doc-format"
     
-    prompt = f"""Format this legal document text to be clean and readable. Apply these rules:
+    convert_file = convert_dir / f"{base_name}_c.txt"
+    formatted_file = format_dir / f"{base_name}_v31.txt"
+    
+    if not convert_file.exists():
+        print(f"    [ERROR] Converted file not found: {convert_file}")
+        return
+    
+    try:
+        with open(convert_file, 'r', encoding='utf-8') as f:
+            text = f.read()
+        
+        # Extract header, body, footer
+        parts = text.split('BEGINNING OF PROCESSED DOCUMENT')
+        if len(parts) != 2:
+            print(f"    [ERROR] Cannot parse document template")
+            return
+        
+        header = parts[0] + 'BEGINNING OF PROCESSED DOCUMENT'
+        remainder = parts[1].split('END OF PROCESSED DOCUMENT')
+        body = remainder[0] if remainder else parts[1]
+        footer = 'END OF PROCESSED DOCUMENT' + (remainder[1] if len(remainder) > 1 else '')
+        
+        # Format body with Gemini
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(MODEL_NAME)
+        
+        # Use exact v21 prompt
+        prompt = f"""Clean this legal document text by fixing OCR errors. Follow these rules:
 
-1. Remove all headers and footers
-2. Fix OCR errors and garbled text
-3. Maintain paragraph structure
-4. Keep page markers: [BEGIN PDF Page N]
-5. Preserve case numbers, dates, and legal citations exactly
+1. Fix obvious OCR errors and garbled text
+2. Maintain original paragraph structure
+3. Keep ALL page markers exactly as: [BEGIN PDF Page N]
+4. Preserve case numbers, dates, citations, and formatting
+5. Do not add or remove content
+6. Keep two blank lines before and after page markers
 
-TEXT:
-{text}"""
+TEXT TO CLEAN:
+{body.strip()}"""
+        
+        response = model.generate_content(prompt)
+        formatted_body = response.text
+        
+        # Reassemble with original header/footer
+        final_text = header + '\n' + formatted_body.strip() + '\n' + footer
+        
+        # Write formatted output
+        with open(formatted_file, 'w', encoding='utf-8') as f:
+            f.write(final_text)
+        
+        print(f"    [OK] Reformatted: {formatted_file.name}")
     
-    response = model.generate_content(prompt)
-    formatted = response.text
-    
-    # Write formatted output
-    with open(formatted_file, 'w', encoding='utf-8') as f:
-        f.write(formatted)
+    except Exception as e:
+        print(f"    [ERROR] Formatting failed: {e}")
 
-def upload_single_pdf_to_gcs(pdf_path, root_dir):
+def upload_single_pdf_to_gcs(root_dir, base_name):
     """Upload a single PDF to GCS (for repair)"""
+    print(f"    [GCS] Uploading to cloud storage...")
+    
+    clean_dir = root_dir / "03_doc-clean"
+    pdf_path = clean_dir / f"{base_name}_o.pdf"
+    
+    if not pdf_path.exists():
+        print(f"    [ERROR] PDF not found: {pdf_path}")
+        return None
+    
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(GCS_BUCKET)
         
         # Construct blob path
-        blob_path = f"legal/{root_dir.name}/cleaned-pdf/{pdf_path.name}"
+        folder_name = root_dir.name
+        blob_path = f"docs/{folder_name}/{pdf_path.name}"
         blob = bucket.blob(blob_path)
+        
+        # Upload
+        print(f"    [INFO] Uploading {pdf_path.name} to gs://{GCS_BUCKET}/{blob_path}")
+        blob.upload_from_filename(str(pdf_path))
+        blob.make_public()
+        
+        public_url = f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_path}"
+        print(f"    [OK] Uploaded: {public_url}")
+        
+        return public_url
+    
+    except Exception as e:
+        print(f"    [ERROR] Upload failed: {e}")
+        return None
+
+def update_headers_single_file(root_dir, base_name):
+    """Update PDF DIRECTORY and PDF PUBLIC LINK headers in formatted file"""
+    print(f"    [HEADERS] Updating document headers...")
+    
+    format_dir = root_dir / "05_doc-format"
+    convert_dir = root_dir / "04_doc-convert"
+    
+    formatted_file = format_dir / f"{base_name}_v31.txt"
+    convert_file = convert_dir / f"{base_name}_c.txt"
+    
+    # Get PDF filename and public URL
+    pdf_filename = f"{base_name}_o.pdf"
+    gcs_url = get_public_url_for_pdf(root_dir, pdf_filename)
+    
+    # Update formatted file
+    if formatted_file.exists():
+        with open(formatted_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        lines = content.split('\n')
+        updated_lines = []
+        
+        for line in lines:
+            if line.startswith("PDF DIRECTORY:"):
+                updated_lines.append(f"PDF DIRECTORY: {root_dir.name}")
+            elif line.startswith("PDF PUBLIC LINK:"):
+                updated_lines.append(f"PDF PUBLIC LINK: {gcs_url}")
+            else:
+                updated_lines.append(line)
+        
+        with open(formatted_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(updated_lines))
+        
+        print(f"    [OK] Updated headers in {formatted_file.name}")
+    
+    # Update convert file
+    if convert_file.exists():
+        with open(convert_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        lines = content.split('\n')
+        updated_lines = []
+        
+        for line in lines:
+            if line.startswith("PDF DIRECTORY:"):
+                updated_lines.append(f"PDF DIRECTORY: {root_dir.name}")
+            elif line.startswith("PDF PUBLIC LINK:"):
+                updated_lines.append(f"PDF PUBLIC LINK: {gcs_url}")
+            else:
+                updated_lines.append(line)
+        
+        with open(convert_file, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(updated_lines))
+
+def get_public_url_for_pdf(root_dir, pdf_filename):
+    """Get or construct public URL for a PDF"""
+    folder_name = root_dir.name
+    blob_path = f"docs/{folder_name}/{pdf_filename}"
+    return f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_path}"
         
         # Upload
         blob.upload_from_filename(str(pdf_path))
