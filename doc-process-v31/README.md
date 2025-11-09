@@ -119,12 +119,11 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 - Successfully tested on 171-page documents (3 chunks)
 - Each chunk maintains page markers and formatting integrity
 
-### Auto-Continue After 30 Seconds (November 2025)
-- **Phase prompts** auto-continue after 30 seconds if no input
-- **Error/cancel handlers** auto-continue to next phase by default
-- Manual override available within timeout window
-- Enables unattended pipeline execution
-- Default behavior: continue to next phase (option 1)
+### Automatic Phase Continuation (November 2025)
+- **No user prompts**: Pipeline continues automatically through all phases
+- **Error/cancel handlers**: Logs issue and continues to next phase
+- Enables fully unattended pipeline execution
+- Removed all `input_with_timeout()` prompts for seamless operation
 
 ### Phase 5 v21 Architecture (November 2025)
 - **Architectural Change**: Phase 5 now matches v21's proven approach

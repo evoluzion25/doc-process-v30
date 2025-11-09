@@ -9,7 +9,7 @@ Major improvements in v31:
 - Dead-letter queue for failed files  
 - Per-file error handling (continues on failure)
 - Progress tracking and performance metrics
-- Auto-continue to next phase after 30 seconds
+- Automatic phase continuation (no user prompts)
 - Chunked processing for large documents (>80 pages)
 
 Performance optimizations (2025-01-08):
@@ -2105,13 +2105,8 @@ def confirm_phase(phase_name):
     print(f"Description: {phase_descriptions.get(phase_name, 'Unknown phase')}")
     print("-"*80)
     
-    choice = input_with_timeout("Commence this phase? [1] Yes  [2] Skip (auto-continue in 30s): ", timeout=30, default='1')
-    
-    while choice not in ['1', '2']:
-        print("Invalid choice. Please enter 1 or 2.")
-        choice = input("Commence this phase? [1] Yes  [2] Skip: ").strip()
-    
-    return choice == '1'
+    # Auto-continue without user prompt
+    return True
 
 # === PHASE OVERVIEW DISPLAY ===
 def print_phase_overview():
@@ -2320,19 +2315,13 @@ def main():
             phase_functions[phase_name](root_dir)
             print(f"[DONE] Completed {phase_name} phase")
         except KeyboardInterrupt:
-            print(f"\n[STOP] User cancelled {phase_name} phase")
-            user_choice = input_with_timeout("Continue to next phase? [1] Yes  [2] Stop (auto-continue in 30s): ", timeout=30, default='1')
-            if user_choice != '1':
-                print("[STOP] Pipeline stopped by user")
-                break
+            print(f"\n[STOP] User cancelled {phase_name} phase - continuing to next phase")
+            continue
         except Exception as e:
             print(f"\n[ERROR] Phase {phase_name} failed with error: {e}")
             print(f"[ERROR] Traceback: {e.__class__.__name__}")
-            user_choice = input_with_timeout("Continue to next phase? [1] Yes  [2] Stop (auto-continue in 30s): ", timeout=30, default='1')
-            if user_choice != '1':
-                print("[STOP] Pipeline stopped due to error")
-                break
             print(f"[CONTINUE] Moving to next phase...")
+            continue
     
     print("\n" + "="*80)
     print("[OK] Processing complete")
