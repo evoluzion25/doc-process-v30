@@ -125,6 +125,14 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 - Enables fully unattended pipeline execution
 - Removed all `input_with_timeout()` prompts for seamless operation
 
+### Automatic Missing File Detection (November 2025)
+- **Smart phase resumption**: Each phase checks for missing files from previous phase
+- **Incremental processing**: Only processes files that don't exist in output directory
+- **Resume capability**: Can safely restart pipeline at any phase without reprocessing
+- **Example**: If Phase 3 has 50 files but Phase 4 only has 45, automatically processes the 5 missing files
+- **Status tracking**: Shows which files are being skipped vs newly processed
+- Enables efficient reruns after failures or partial completions
+
 ### Phase 5 v21 Architecture (November 2025)
 - **Architectural Change**: Phase 5 now matches v21's proven approach
   - Phase 4 creates complete template (header + body + footer)
