@@ -839,45 +839,13 @@ def _process_clean_pdf(pdf_path, clean_dir):
     compressed_path = None
     
     try:
-        # STEP 1: Clean metadata, annotations, highlights, bookmarks FIRST
-        print(f"[STEP 1] Cleaning metadata/annotations: {pdf_path.name}")
-        temp_cleaned = clean_dir / f"{base_name}_metadata_cleaned.pdf"
-        try:
-            doc = fitz.open(pdf_path)
-            
-            # Clear all metadata
-            doc.set_metadata({})
-            
-            # Remove all annotations (including highlights, comments, stamps)
-            annot_count = 0
-            for page in doc:
-                annot = page.first_annot
-                while annot:
-                    next_annot = annot.next
-                    page.delete_annot(annot)
-                    annot = next_annot
-                    annot_count += 1
-            
-            # Remove bookmarks/outline
-            doc.set_toc([])
-            
-            # Save cleaned PDF
-            doc.save(str(temp_cleaned), garbage=4, deflate=True, clean=True)
-            doc.close()
-            
-            print(f"  → Removed {annot_count} annotations, saved to temp: {temp_cleaned.name}")
-            
-            # Use cleaned PDF as input for OCR
-            ocr_input = str(temp_cleaned)
-        except Exception as e:
-            print(f"[WARN] Metadata cleaning failed for {pdf_path.name}: {e}")
-            ocr_input = str(pdf_path)  # Fallback to original
-            if temp_cleaned and temp_cleaned.exists():
-                temp_cleaned.unlink()
-            temp_cleaned = None
+        # STEP 1: Skip metadata cleaning for now - directly OCR original
+        print(f"[STEP 1] Skipping metadata cleaning (causes InputFileError), using original PDF")
+        ocr_input = str(pdf_path)
+        temp_cleaned = None
         
-        # STEP 2: OCR the cleaned PDF
-        print(f"[STEP 2] Running OCR (600 DPI) on cleaned file...")
+        # STEP 2: OCR the original PDF
+        print(f"[STEP 2] Running OCR (600 DPI) on original file...")
         
         # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
