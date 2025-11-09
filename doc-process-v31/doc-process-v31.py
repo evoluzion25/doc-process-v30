@@ -1616,7 +1616,7 @@ def phase5_format(root_dir):
 1. Fix OCR errors and preserve legal terminology
 2. CRITICAL: Preserve ALL page markers EXACTLY as they appear: '[BEGIN PDF Page N]' with blank lines before and after
 3. NEVER remove or modify page markers, especially [BEGIN PDF Page 1] - it MUST be preserved
-4. Format with natural line breaks - do NOT artificially break lines at 65 characters mid-sentence
+4. Format with lines under 65 characters and proper paragraph breaks
 5. Render logo/header text on SINGLE lines (e.g., "MERRY FARNEN & RYAN" not multi-line)
 6. Use standard bullet points (•) not filled circles (⚫)
 7. Use full forwarded message marker: "---------- Forwarded message ---------"
@@ -1742,52 +1742,48 @@ def phase6_gcs_upload(root_dir):
                 # Update 04_doc-convert/*_c.txt header
                 if convert_file and convert_file.exists():
                     with open(convert_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
+                        lines = f.readlines()
                     
-                    # Create header
-                    header = f"PDF Directory: {pdf_directory}\nPDF Public Link: {gcs_url}\n\n"
+                    # Update PDF DIRECTORY and PDF PUBLIC LINK lines in template
+                    updated = False
+                    for i, line in enumerate(lines):
+                        if line.startswith("PDF DIRECTORY:"):
+                            lines[i] = f"PDF DIRECTORY: {pdf_directory}\n"
+                            updated = True
+                        elif line.startswith("PDF PUBLIC LINK:") or line.startswith("PDF PUBLIC URL:"):
+                            lines[i] = f"PDF PUBLIC LINK: {gcs_url}\n"
+                            updated = True
                     
-                    # Remove old header if exists
-                    if content.startswith("PDF URL:") or content.startswith("PDF Directory:") or content.startswith("PDF Public Link:"):
-                        lines = content.split('\n')
-                        content_start = 0
-                        for i, line in enumerate(lines):
-                            if not line.startswith("PDF") and line.strip():
-                                content_start = i
-                                break
-                        content = '\n'.join(lines[content_start:])
-                    
-                    # Write updated content
-                    with open(convert_file, 'w', encoding='utf-8') as f:
-                        f.write(header + content)
-                    
-                    convert_updated_count += 1
-                    print(f"[OK] Updated header in: {convert_file.name}")
+                    if updated:
+                        with open(convert_file, 'w', encoding='utf-8') as f:
+                            f.writelines(lines)
+                        convert_updated_count += 1
+                        print(f"[OK] Updated header in: {convert_file.name}")
+                    else:
+                        print(f"[WARN] No header lines found to update in: {convert_file.name}")
                 
                 # Update 05_doc-format/*_v31.txt header
                 if format_file and format_file.exists():
                     with open(format_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
+                        lines = f.readlines()
                     
-                    # Create header
-                    header = f"PDF Directory: {pdf_directory}\nPDF Public Link: {gcs_url}\n\n"
+                    # Update PDF DIRECTORY and PDF PUBLIC LINK lines in template
+                    updated = False
+                    for i, line in enumerate(lines):
+                        if line.startswith("PDF DIRECTORY:"):
+                            lines[i] = f"PDF DIRECTORY: {pdf_directory}\n"
+                            updated = True
+                        elif line.startswith("PDF PUBLIC LINK:") or line.startswith("PDF PUBLIC URL:"):
+                            lines[i] = f"PDF PUBLIC LINK: {gcs_url}\n"
+                            updated = True
                     
-                    # Remove old header if exists
-                    if content.startswith("PDF URL:") or content.startswith("PDF Directory:") or content.startswith("PDF Public Link:"):
-                        lines = content.split('\n')
-                        content_start = 0
-                        for i, line in enumerate(lines):
-                            if not line.startswith("PDF") and line.strip():
-                                content_start = i
-                                break
-                        content = '\n'.join(lines[content_start:])
-                    
-                    # Write updated content
-                    with open(format_file, 'w', encoding='utf-8') as f:
-                        f.write(header + content)
-                    
-                    format_updated_count += 1
-                    print(f"[OK] Updated header in: {format_file.name}")
+                    if updated:
+                        with open(format_file, 'w', encoding='utf-8') as f:
+                            f.writelines(lines)
+                        format_updated_count += 1
+                        print(f"[OK] Updated header in: {format_file.name}")
+                    else:
+                        print(f"[WARN] No header lines found to update in: {format_file.name}")
                 
                 if not convert_file or not convert_file.exists():
                     print(f"[WARN] No convert file found: {base_name}_c.txt")
