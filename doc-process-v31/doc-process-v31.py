@@ -860,26 +860,30 @@ def _process_clean_pdf(pdf_path, clean_dir):
             # Verify OCR quality - check if header text was captured
             try:
                 doc = fitz.open(str(output_path))
-                page1_text = doc[0].get_text().upper()
+                page1_text = doc[0].get_text()
                 doc.close()
                 
-                # Check for header keywords that indicate successful OCR of page headers
-                # Many legal docs have underlined headers that Tesseract misses
-                has_header_keywords = any(keyword in page1_text for keyword in [
-                    'PETITION', 'MOTION', 'BRIEF', 'COMPLAINT', 'ANSWER', 
-                    'RESPONSE', 'OBJECTION', 'ORDER', 'AMENDED'
-                ])
+                # For AMENDED documents, check that BOTH words appear (underlined headers often missing)
+                has_amended_and_petition = ("AMENDED" in page1_text.upper() and "PETITION" in page1_text.upper())
                 
-                if len(page1_text) > 100 and has_header_keywords:
-                    print(f"  → Fast OCR successful ({len(page1_text)} chars, header keywords found)")
+                # Basic quality check
+                good_quality = len(page1_text) > 100
+                
+                if good_quality and has_amended_and_petition:
+                    print(f"  → Fast OCR successful ({len(page1_text)} chars, 'AMENDED PETITION' found)")
                     success = True
-                else:
-                    if len(page1_text) < 100:
-                        print(f"  [WARN] Fast OCR produced little text ({len(page1_text)} chars), trying preprocessing")
-                    else:
-                        print(f"  [WARN] Fast OCR missing header keywords, trying preprocessing")
+                elif good_quality and "AMENDED" not in page1_text.upper():
+                    # Likely missing underlined header - force preprocessing
+                    print(f"  [WARN] Fast OCR missing 'AMENDED' keyword (likely underlined header), trying preprocessing")
                     success = False
                     output_path.unlink()  # Remove poor quality output
+                elif not good_quality:
+                    print(f"  [WARN] Fast OCR produced little text ({len(page1_text)} chars), trying preprocessing")
+                    success = False
+                    output_path.unlink()
+                else:
+                    print(f"  → Fast OCR successful ({len(page1_text)} chars on page 1)")
+                    success = True
             except Exception as e:
                 print(f"  [WARN] Could not verify OCR quality: {e}")
                 success = False
