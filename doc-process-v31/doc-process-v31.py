@@ -1739,13 +1739,23 @@ def phase5_format(root_dir):
 1. Fix OCR errors and preserve legal terminology
 2. CRITICAL: Preserve ALL page markers EXACTLY as they appear: '[BEGIN PDF Page N]' with blank lines before and after
 3. NEVER remove or modify page markers, especially [BEGIN PDF Page 1] - it MUST be preserved
-4. Format with lines under 65 characters and proper paragraph breaks
-5. Render logo/header text on SINGLE lines (e.g., "MERRY FARNEN & RYAN" not multi-line)
-6. Use standard bullet points (•) not filled circles (⚫)
-7. Use full forwarded message marker: "---------- Forwarded message ---------"
-8. Return only the corrected text with ALL page markers intact
+4. NEVER move page markers - they must stay at the START of each page's content
+5. Format with lines under 65 characters and proper paragraph breaks
+6. Render logo/header text on SINGLE lines (e.g., "MERRY FARNEN & RYAN" not multi-line)
+7. Use standard bullet points (•) not filled circles (⚫)
+8. Use full forwarded message marker: "---------- Forwarded message ---------"
+9. Return only the corrected text with ALL page markers in their ORIGINAL positions
 
-IMPORTANT: The first page marker [BEGIN PDF Page 1] must appear at the start of the document body. Do not remove it."""
+CRITICAL STRUCTURE:
+[BEGIN PDF Page 1]
+
+<content for page 1>
+
+[BEGIN PDF Page 2]
+
+<content for page 2>
+
+DO NOT move markers to the end of content. Keep them at the START."""
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS_IO) as executor:
         futures = {
@@ -2970,8 +2980,8 @@ def extract_text_with_vision(pdf_path):
     return ''.join(all_text)
 
 def format_single_file(root_dir, base_name):
-    """Format a single converted file (for repair)"""
-    print(f"    [FORMAT] Reformatting with Gemini...")
+    """Format a single converted file (for repair) - MUST match Phase 5 exactly"""
+    print(f"    [FORMAT] Reformatting with Gemini (v21 architecture)...")
     
     convert_dir = root_dir / "04_doc-convert"
     format_dir = root_dir / "05_doc-format"
@@ -2984,48 +2994,102 @@ def format_single_file(root_dir, base_name):
         return
     
     try:
-        with open(convert_file, 'r', encoding='utf-8') as f:
-            text = f.read()
-        
-        # Extract header, body, footer
-        parts = text.split('BEGINNING OF PROCESSED DOCUMENT')
-        if len(parts) != 2:
-            print(f"    [ERROR] Cannot parse document template")
-            return
-        
-        header = parts[0] + 'BEGINNING OF PROCESSED DOCUMENT'
-        remainder = parts[1].split('END OF PROCESSED DOCUMENT')
-        body = remainder[0] if remainder else parts[1]
-        footer = 'END OF PROCESSED DOCUMENT' + (remainder[1] if len(remainder) > 1 else '')
-        
-        # Format body with Gemini
+        # Initialize Gemini model
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel(MODEL_NAME)
         
-        # Use exact v21 prompt
-        prompt = f"""Clean this legal document text by fixing OCR errors. Follow these rules:
-
-1. Fix obvious OCR errors and garbled text
-2. Maintain original paragraph structure
-3. Keep ALL page markers exactly as: [BEGIN PDF Page N]
-4. Preserve case numbers, dates, citations, and formatting
-5. Do not add or remove content
-6. Keep two blank lines before and after page markers
-
-TEXT TO CLEAN:
-{body.strip()}"""
+        # Read input text (has template from Phase 4)
+        with open(convert_file, 'r', encoding='utf-8') as f:
+            full_text = f.read()
         
-        response = model.generate_content(prompt)
-        formatted_body = response.text
+        # CRITICAL: Extract header, body, footer separately (like v21/Phase 5)
+        # Gemini should ONLY see the document body, not the template
+        body_start = full_text.find("BEGINNING OF PROCESSED DOCUMENT")
+        footer_start = full_text.find("=====================================================================\nEND OF PROCESSED DOCUMENT")
         
-        # Reassemble with original header/footer
-        final_text = header + '\n' + formatted_body.strip() + '\n' + footer
+        if body_start < 0 or footer_start < 0:
+            print(f"    [ERROR] Template markers not found - file may not be from Phase 4")
+            return
+        
+        # Skip past the BEGINNING marker and separator line to get to content
+        body_start_line = full_text.find("\n", body_start + len("BEGINNING OF PROCESSED DOCUMENT"))
+        body_start_line = full_text.find("\n", body_start_line + 1)  # Skip the === line
+        body_start_content = body_start_line + 1
+        
+        # Extract the three parts
+        header = full_text[:body_start_content]
+        raw_body = full_text[body_start_content:footer_start].strip()
+        footer = full_text[footer_start:]  # Includes the === line before END
+        
+    # Use EXACT v31 prompt from Phase 5
+    prompt = """You are correcting OCR output for a legal document. Your task is to:
+1. Fix OCR errors and preserve legal terminology
+2. CRITICAL: Preserve ALL page markers EXACTLY as they appear: '[BEGIN PDF Page N]' with blank lines before and after
+3. NEVER remove or modify page markers, especially [BEGIN PDF Page 1] - it MUST be preserved
+4. NEVER move page markers - they must stay at the START of each page's content
+5. Format with lines under 65 characters and proper paragraph breaks
+6. Render logo/header text on SINGLE lines (e.g., "MERRY FARNEN & RYAN" not multi-line)
+7. Use standard bullet points (•) not filled circles (⚫)
+8. Use full forwarded message marker: "---------- Forwarded message ---------"
+9. Return only the corrected text with ALL page markers in their ORIGINAL positions
+
+CRITICAL STRUCTURE:
+[BEGIN PDF Page 1]
+
+<content for page 1>
+
+[BEGIN PDF Page 2]
+
+<content for page 2>
+
+DO NOT move markers to the end of content. Keep them at the START."""        # Check if document needs chunking (count pages)
+        page_count = len(re.findall(r'\[BEGIN PDF Page \d+\]', raw_body))
+        
+        if page_count > 80:
+            # Large document - process in chunks (like Phase 5)
+            print(f"    [CHUNK] Document has {page_count} pages - processing in 80-page chunks...")
+            chunks = _chunk_body_by_pages(raw_body, pages_per_chunk=80)
+            cleaned_chunks = []
+            
+            for idx, chunk in enumerate(chunks, 1):
+                print(f"      Processing chunk {idx}/{len(chunks)}...")
+                response = model.generate_content(
+                    prompt + "\n\n" + chunk,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.1,
+                        max_output_tokens=MAX_OUTPUT_TOKENS
+                    )
+                )
+                cleaned_chunks.append(response.text.strip())
+            
+            # Consolidate chunks
+            cleaned_body = "\n\n".join(cleaned_chunks)
+            print(f"    [OK] Consolidated {len(chunks)} chunks into complete document")
+        
+        else:
+            # Small document - process in single call
+            response = model.generate_content(
+                prompt + "\n\n" + raw_body,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=MAX_OUTPUT_TOKENS
+                )
+            )
+            cleaned_body = response.text.strip()
+        
+        # Reassemble: header + cleaned_body + footer (like v21/Phase 5)
+        # CRITICAL: Ensure blank lines between sections
+        if not header.endswith("\n\n"):
+            header = header.rstrip() + "\n\n"
+        
+        # Footer should have blank lines before it
+        final_text = header + cleaned_body + "\n\n" + footer
         
         # Write formatted output
         with open(formatted_file, 'w', encoding='utf-8') as f:
             f.write(final_text)
         
-        print(f"    [OK] Reformatted: {formatted_file.name}")
+        print(f"    [OK] Reformatted: {formatted_file.name} ({page_count} pages)")
     
     except Exception as e:
         print(f"    [ERROR] Formatting failed: {e}")
@@ -3123,42 +3187,6 @@ def get_public_url_for_pdf(root_dir, pdf_filename):
     folder_name = root_dir.name
     blob_path = f"docs/{folder_name}/{pdf_filename}"
     return f"https://storage.cloud.google.com/{GCS_BUCKET}/{blob_path}"
-        
-        # Upload
-        blob.upload_from_filename(str(pdf_path))
-        blob.make_public()
-        
-        print(f"    [OK] Uploaded to GCS: {blob_path}")
-    except Exception as e:
-        raise DocumentProcessingError(f"GCS upload failed: {e}")
-
-def update_headers_single_file(formatted_file, root_dir):
-    """Update headers in a single formatted file (for repair)"""
-    with open(formatted_file, 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    # Get PDF filename
-    base_name = formatted_file.stem[:-4]  # Remove _v31
-    pdf_filename = f"{base_name}_o.pdf"
-    
-    # Get public URL
-    gcs_url = get_public_url_for_pdf(root_dir, pdf_filename)
-    
-    # Update headers
-    lines = content.split('\n')
-    updated_lines = []
-    
-    for line in lines:
-        if line.startswith("PDF DIRECTORY:"):
-            updated_lines.append(f"PDF DIRECTORY: {root_dir.name}")
-        elif line.startswith("PDF PUBLIC LINK:"):
-            updated_lines.append(f"PDF PUBLIC LINK: {gcs_url}")
-        else:
-            updated_lines.append(line)
-    
-    # Write back
-    with open(formatted_file, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(updated_lines))
 
 # === PHASE 8: REPAIR - AUTOMATIC REPAIR OF VERIFICATION ISSUES ===
 def phase8_repair(root_dir):
