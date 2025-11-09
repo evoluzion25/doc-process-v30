@@ -553,18 +553,29 @@ END OF PROCESSED DOCUMENT
    - Affected pages
    - Content accuracy percentage
 
-3. **Detailed Document Comparison Table**: 
+3. **Detailed Document Comparison Table** (organized by validation type):
    ```
-   Document Name     PDF  TXT  Match  PDF MB  TXT MB  Chars     URL OK  Accuracy  Status
-   file_name         10   10   YES    2.14    0.01    18,758    YES     86%       OK
+                                           |---- PDF CONVERSION ----|  |---------- TXT CONVERSION ----------|
+   Document Name                           | Pages  URL OK  PDF MB  Reduce%  | Pages  Match  Chars      Markers  Accuracy  | Status
+   file_name                               | 10     YES     2.14    91.5%    | 10     YES    18,758     YES      86%       | OK
    ```
-   - **PDF/TXT**: Page counts in each file
-   - **Match**: YES if page counts match
-   - **PDF MB/TXT MB**: File sizes for comparison
-   - **Chars**: Character count in formatted text
-   - **URL OK**: GCS public URL accessibility (YES/NO)
-   - **Accuracy**: Content match confidence from PDF vs TXT comparison
-   - **Status**: OK (verified) / WARNING (issues found) / FAILED (error)
+   
+   **Column Groups**:
+   
+   **PDF CONVERSION** (Verifies online PDF quality):
+   - **Pages**: Number of pages in cleaned/OCR'd PDF
+   - **URL OK**: GCS public URL accessible (YES/NO) - verifies online availability
+   - **PDF MB**: File size after OCR and compression
+   - **Reduce%**: Size reduction from original (compression effectiveness)
+   
+   **TXT CONVERSION** (Verifies text extraction accuracy):
+   - **Pages**: Number of [BEGIN PDF Page N] markers in TXT
+   - **Match**: YES if PDF pages = TXT page markers (no missing pages)
+   - **Chars**: Total character count (verifies content was extracted)
+   - **Markers**: YES if [BEGIN PDF Page 1] exists (proper page marking)
+   - **Accuracy**: Content match confidence from PDF vs TXT comparison (70%+ is passing)
+   
+   **Status**: OK (verified) / WARNING (issues found) / FAILED (error)
 
 4. **Document Files and Public URLs**: For each document:
    - PDF: filename, GCS URL, page count, file size

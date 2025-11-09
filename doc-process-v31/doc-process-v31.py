@@ -2597,36 +2597,50 @@ def phase7_verify(root_dir, auto_repair=False):
         
         # DETAILED DOCUMENT COMPARISON TABLE
         f.write("DETAILED DOCUMENT COMPARISON\n")
-        f.write("="*150 + "\n")
-        f.write(f"{'Document Name':<40} {'PDF':<8} {'TXT':<8} {'Match':<6} {'PDF MB':<9} {'TXT MB':<9} {'Chars':<10} {'URL OK':<7} {'Accuracy':<9} {'Status':<8}\n")
-        f.write("-"*150 + "\n")
+        f.write("="*180 + "\n")
+        f.write("                                         |---- PDF CONVERSION ----|  |---------- TXT CONVERSION ----------|\n")
+        f.write(f"{'Document Name':<40} | {'Pages':<6} {'URL OK':<7} {'PDF MB':<7} {'Reduce%':<8} | {'Pages':<6} {'Match':<6} {'Chars':<10} {'Markers':<8} {'Accuracy':<9} | {'Status':<8}\n")
+        f.write("-"*180 + "\n")
         
         for row in manifest_rows:
             doc_name = row['file'].replace('_o.pdf', '')
             if len(doc_name) > 38:
                 doc_name = doc_name[:35] + "..."
             
+            # PDF Conversion columns
             pdf_pages = str(row['pdf_pages'])
+            url_ok = row['url_accessible']
+            pdf_mb = f"{row['mb']:.2f}"
+            reduction = f"{row['reduction_pct']:.1f}%" if row['reduction_pct'] else "N/A"
+            
+            # TXT Conversion columns
             txt_pages = str(row['formatted_pages'])
             page_match = row['page_match']
-            pdf_mb = f"{row['mb']:.2f}"
-            txt_mb = f"{row['txt_mb']:.2f}"
             chars = f"{row['formatted_chars']:,}"
-            url_ok = row['url_accessible']
+            markers = row['page_markers_valid']
             accuracy = row['content_confidence']
+            
             status = row['status']
             
-            f.write(f"{doc_name:<40} {pdf_pages:<8} {txt_pages:<8} {page_match:<6} {pdf_mb:<9} {txt_mb:<9} {chars:<10} {url_ok:<7} {accuracy:<9} {status:<8}\n")
+            f.write(f"{doc_name:<40} | {pdf_pages:<6} {url_ok:<7} {pdf_mb:<7} {reduction:<8} | {txt_pages:<6} {page_match:<6} {chars:<10} {markers:<8} {accuracy:<9} | {status:<8}\n")
         
         f.write("\n")
-        f.write("LEGEND:\n")
-        f.write("  PDF/TXT: Page counts in PDF file vs TXT file markers\n")
-        f.write("  Match: YES if page counts match, NO if mismatch\n")
-        f.write("  PDF MB/TXT MB: File sizes in megabytes\n")
-        f.write("  Chars: Total character count in formatted text file\n")
-        f.write("  URL OK: YES if GCS public URL is accessible, NO if not found\n")
-        f.write("  Accuracy: Content match confidence from PDF vs TXT comparison\n")
-        f.write("  Status: OK = verified, WARNING = issues found, FAILED = error\n\n")
+        f.write("COLUMN GROUPS:\n")
+        f.write("\n")
+        f.write("PDF CONVERSION (Verifies online PDF quality):\n")
+        f.write("  Pages: Number of pages in cleaned/OCR'd PDF\n")
+        f.write("  URL OK: GCS public URL accessible (YES/NO) - verifies online availability\n")
+        f.write("  PDF MB: File size after OCR and compression\n")
+        f.write("  Reduce%: Size reduction from original (compression effectiveness)\n")
+        f.write("\n")
+        f.write("TXT CONVERSION (Verifies text extraction accuracy):\n")
+        f.write("  Pages: Number of [BEGIN PDF Page N] markers in TXT\n")
+        f.write("  Match: YES if PDF pages = TXT page markers (no missing pages)\n")
+        f.write("  Chars: Total character count (verifies content was extracted)\n")
+        f.write("  Markers: YES if [BEGIN PDF Page 1] exists (proper page marking)\n")
+        f.write("  Accuracy: Content match confidence from PDF vs TXT comparison (70%+ is passing)\n")
+        f.write("\n")
+        f.write("Status: OK = verified, WARNING = issues found, FAILED = error\n\n")
         
         # DOCUMENT FILES AND URLS
         f.write("DOCUMENT FILES AND PUBLIC URLS\n")
