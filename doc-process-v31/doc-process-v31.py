@@ -842,123 +842,143 @@ def _process_clean_pdf(pdf_path, clean_dir):
     compressed_path = None
     
     try:
-        # STEP 1: Preprocess PDF - Remove underlines to improve OCR
-        print(f"[STEP 1] Preprocessing PDF (remove underlines, enhance contrast)...")
-        temp_preprocessed = clean_dir / f"{base_name}_preprocessed.pdf"
+        # STEP 1: Try fast OCR first (without preprocessing)
+        print(f"[STEP 1] Attempting fast OCR (no preprocessing)...")
         
-        doc = fitz.open(str(pdf_path))
-        temp_images = []
-        
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            
-            # Render at high DPI for OCR
-            mat = fitz.Matrix(3.0, 3.0)  # ~864 DPI
-            pix = page.get_pixmap(matrix=mat, alpha=False)
-            
-            # Convert to PIL Image
-            img_data = pix.tobytes("png")
-            img = Image.open(io.BytesIO(img_data))
-            
-            # Enhance for OCR: grayscale + contrast + remove horizontal lines
-            img_gray = img.convert('L')
-            enhancer = ImageEnhance.Contrast(img_gray)
-            img_enhanced = enhancer.enhance(2.0)
-            
-            # Remove horizontal lines (underlines)
-            width, height = img_enhanced.size
-            pixel_data = img_enhanced.load()
-            
-            if pixel_data is not None:
-                for y in range(height):
-                    line_length = 0
-                    for x in range(width):
-                        pixel_val = pixel_data[x, y]
-                        if isinstance(pixel_val, (int, float)) and pixel_val < 128:
-                            line_length += 1
-                        else:
-                            if line_length > width * 0.3:  # Long horizontal line
-                                for xx in range(x - line_length, x):
-                                    if 0 <= xx < width:
-                                        pixel_data[xx, y] = 255
-                            line_length = 0
-            
-            # Save temp image
-            temp_img = clean_dir / f"{base_name}_temp_page_{page_num + 1}.png"
-            img_enhanced.save(str(temp_img), dpi=(600, 600))
-            temp_images.append(temp_img)
-        
-        doc.close()
-        
-        # Create PDF from preprocessed images with correct page dimensions
-        # Original PDF standard: 8.5x11" = 612x792 points at 72 DPI
-        # We rendered at 3x zoom (864 DPI effective) and saved at 600 DPI
-        new_doc = fitz.open()
-        
-        for img_path in temp_images:
-            # Open image to get dimensions
-            img = Image.open(str(img_path))
-            img_width, img_height = img.size
-            img.close()
-            
-            # Images were rendered at 3x zoom from 72 DPI = 216 DPI effective
-            # But saved with 600 DPI metadata, so actual size needs correction
-            # Convert from pixels to PDF points (72 DPI)
-            # Formula: points = pixels * 72 / actual_dpi
-            # Since we rendered at 3x (effective 216 DPI), divide by 3
-            page_width = img_width / 3.0
-            page_height = img_height / 3.0
-            
-            # Create new page with correct dimensions (in points)
-            page = new_doc.new_page(width=page_width, height=page_height)
-            
-            # Insert image to fill the page
-            page_rect = page.rect
-            page.insert_image(page_rect, filename=str(img_path))
-        
-        new_doc.save(str(temp_preprocessed))
-        new_doc.close()
-        
-        print(f"  → Preprocessed {len(temp_images)} pages")
-        
-        # Clean up temp images
-        for img_path in temp_images:
-            if img_path.exists():
-                img_path.unlink()
-        
-        # STEP 2: OCR preprocessed PDF
-        print(f"[STEP 2] Running OCR (600 DPI) on preprocessed file...")
-        
-        # Get ocrmypdf path (try PATH first, then venv)
         ocrmypdf_cmd = shutil.which('ocrmypdf') or 'E:\\00_dev_1\\.venv\\Scripts\\ocrmypdf.exe'
-
-        # Use simple --force-ocr (most reliable)
+        
+        # Try basic OCR first
         cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa',
                '--oversample', '600',
-               str(temp_preprocessed), str(output_path)]
+               str(pdf_path), str(output_path)]
         
         success, out = run_subprocess(cmd)
         
-        # Print error if OCR fails
         if not success:
-            print(f"  [ERROR] ocrmypdf failed: {out[:200] if out else 'No error output'}")
+            print(f"  [WARN] Fast OCR failed, will try preprocessing")
+        else:
+            # Verify OCR quality - check if text extraction works
+            try:
+                doc = fitz.open(str(output_path))
+                page1_text = doc[0].get_text()
+                doc.close()
+                
+                # If page 1 has reasonable text, OCR succeeded
+                if len(page1_text) > 100:
+                    print(f"  → Fast OCR successful ({len(page1_text)} chars on page 1)")
+                    success = True
+                else:
+                    print(f"  [WARN] Fast OCR produced little text ({len(page1_text)} chars), trying preprocessing")
+                    success = False
+                    output_path.unlink()  # Remove poor quality output
+            except Exception as e:
+                print(f"  [WARN] Could not verify OCR quality: {e}")
+                success = False
         
+        # STEP 2: If fast OCR failed, try PIL preprocessing
         if not success:
-            # Fallback: copy original without OCR
-            print(f"[STEP 2b] Fallback: copying preprocessed file without OCR")
-            shutil.copy2(str(temp_preprocessed), str(output_path))
-            success = True
+            print(f"[STEP 2] Preprocessing PDF (remove underlines, enhance contrast)...")
+            temp_preprocessed = clean_dir / f"{base_name}_preprocessed.pdf"
+            
+            doc = fitz.open(str(pdf_path))
+            temp_images = []
+            
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                
+                # Render at high DPI for OCR
+                mat = fitz.Matrix(3.0, 3.0)  # ~864 DPI
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+                
+                # Convert to PIL Image
+                img_data = pix.tobytes("png")
+                img = Image.open(io.BytesIO(img_data))
+                
+                # Enhance for OCR: grayscale + contrast + remove horizontal lines
+                img_gray = img.convert('L')
+                enhancer = ImageEnhance.Contrast(img_gray)
+                img_enhanced = enhancer.enhance(2.0)
+                
+                # Remove horizontal lines (underlines)
+                width, height = img_enhanced.size
+                pixel_data = img_enhanced.load()
+                
+                if pixel_data is not None:
+                    for y in range(height):
+                        line_length = 0
+                        for x in range(width):
+                            pixel_val = pixel_data[x, y]
+                            if isinstance(pixel_val, (int, float)) and pixel_val < 128:
+                                line_length += 1
+                            else:
+                                if line_length > width * 0.3:  # Long horizontal line
+                                    for xx in range(x - line_length, x):
+                                        if 0 <= xx < width:
+                                            pixel_data[xx, y] = 255
+                                line_length = 0
+                
+                # Save temp image
+                temp_img = clean_dir / f"{base_name}_temp_page_{page_num + 1}.png"
+                img_enhanced.save(str(temp_img), dpi=(600, 600))
+                temp_images.append(temp_img)
+            
+            doc.close()
+            
+            # Create PDF from preprocessed images with correct page dimensions
+            new_doc = fitz.open()
+            
+            for img_path in temp_images:
+                # Open image to get dimensions
+                img = Image.open(str(img_path))
+                img_width, img_height = img.size
+                img.close()
+                
+                # Images rendered at 3x zoom, convert to PDF points
+                page_width = img_width / 3.0
+                page_height = img_height / 3.0
+                
+                # Create new page with correct dimensions
+                page = new_doc.new_page(width=page_width, height=page_height)
+                
+                # Insert image to fill the page
+                page_rect = page.rect
+                page.insert_image(page_rect, filename=str(img_path))
+            
+            new_doc.save(str(temp_preprocessed))
+            new_doc.close()
+            
+            print(f"  → Preprocessed {len(temp_images)} pages")
+            
+            # Clean up temp images
+            for img_path in temp_images:
+                if img_path.exists():
+                    img_path.unlink()
+            
+            # STEP 3: OCR preprocessed PDF
+            print(f"[STEP 3] Running OCR on preprocessed file...")
+            
+            cmd = [ocrmypdf_cmd, '--force-ocr', '--output-type', 'pdfa',
+                   '--oversample', '600',
+                   str(temp_preprocessed), str(output_path)]
+            
+            success, out = run_subprocess(cmd)
+            
+            if not success:
+                print(f"  [ERROR] Preprocessed OCR failed: {out[:200] if out else 'No error output'}")
+                # Fallback: copy preprocessed file
+                shutil.copy2(str(temp_preprocessed), str(output_path))
+                success = True
         
-        # STEP 3: Clean up temp preprocessed file
+        # STEP FINAL: Clean up temp preprocessed file
         if temp_preprocessed and temp_preprocessed.exists():
-            print(f"[STEP 3] Deleting temp preprocessed file: {temp_preprocessed.name}")
             try:
                 temp_preprocessed.unlink()
             except Exception:
                 pass  # Ignore cleanup errors
         
-        # STEP 4: Compress PDF to reduce file size while maintaining searchability
-        print(f"[STEP 4] Compressing OCR'd PDF for online access...")
+        # STEP COMPRESSION: Compress PDF to reduce file size
+        step_num = 2 if success else 4  # Adjust step number based on path taken
+        print(f"[STEP {step_num}] Compressing OCR'd PDF for online access...")
         if success or output_path.exists():
             try:
                 original_size = output_path.stat().st_size
@@ -1591,13 +1611,16 @@ def phase5_format(root_dir):
     
     genai.configure(api_key=GEMINI_API_KEY)
     
-    # v21 exact prompt - Gemini only sees document body, not template
+    # v31 prompt with v20 formatting attributes
     prompt = """You are correcting OCR output for a legal document. Your task is to:
 1. Fix OCR errors and preserve legal terminology
 2. CRITICAL: Preserve ALL page markers EXACTLY as they appear: '[BEGIN PDF Page N]' with blank lines before and after
 3. NEVER remove or modify page markers, especially [BEGIN PDF Page 1] - it MUST be preserved
-4. Format with lines under 65 characters and proper paragraph breaks
-5. Return only the corrected text with ALL page markers intact
+4. Format with natural line breaks - do NOT artificially break lines at 65 characters mid-sentence
+5. Render logo/header text on SINGLE lines (e.g., "MERRY FARNEN & RYAN" not multi-line)
+6. Use standard bullet points (•) not filled circles (⚫)
+7. Use full forwarded message marker: "---------- Forwarded message ---------"
+8. Return only the corrected text with ALL page markers intact
 
 IMPORTANT: The first page marker [BEGIN PDF Page 1] must appear at the start of the document body. Do not remove it."""
     
