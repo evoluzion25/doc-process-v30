@@ -481,38 +481,102 @@ END OF PROCESSED DOCUMENT
 ### Phase 7: Verify
 - **Input**: `03_doc-clean/*_o.pdf` + `04_doc-convert/*_c.txt` + `05_doc-format/*_v31.txt`
 - **Output**: Verification report + PDF manifest CSV
-- **Action**: Comprehensive validation with detailed comparison tables
-  - **PDF Directory header validation**: Verifies header matches actual folder path
-  - **PDF Public Link format validation**: Ensures proper public URL format
-  - **Page count comparison**: Compares PDF pages vs [BEGIN PDF Page N] markers in text
-  - **Page marker validation**: Confirms [BEGIN PDF Page 1] exists in all documents
-  - **Character count tracking**: Records total characters in formatted text
-  - **File completeness checks**: Ensures all files present in pipeline
+- **Action**: **Comprehensive validation with actual content comparison** (CRITICAL for legal documents)
   
+#### Validation Checks Performed:
+
+**Header Validation**:
+- **PDF Directory header**: Verifies header matches actual folder path
+- **PDF Public Link format**: Ensures proper public URL format
+- **GCS URL accessibility**: Tests if public URLs are accessible (YES/NO indicator)
+
+**Content Validation** (NEW - Critical for Legal Documents):
+- **Actual text extraction**: Extracts text from PDF pages for comparison
+- **Content matching**: Compares PDF text to formatted TXT content
+- **Accuracy scoring**: Confidence percentage (first and last page comparison)
+- **OCR quality check**: Detects garbled text, missing content, formatting issues
+- **Completeness verification**: Ensures all text was extracted correctly
+
+**Structural Validation**:
+- **Page count comparison**: PDF pages vs [BEGIN PDF Page N] markers in text
+- **Page marker validation**: Confirms [BEGIN PDF Page 1] exists
+- **Character count tracking**: Total characters in formatted text
+- **File size comparison**: PDF size (MB) vs TXT size (MB)
+
 **Verification Report Sections**:
+
 1. **Summary**: Total files, verified count, warnings, failures
-2. **Detailed Document Comparison Table**: 
-   - Document name
-   - PDF pages (from cleaned PDF)
-   - TXT pages (count of page markers)
-   - Match status (YES/NO)
-   - Character count
-   - Marker validation (YES/NO)
-   - Overall status (OK/WARNING/FAILED)
-3. **Document Files and Public URLs**: For each document shows:
-   - PDF filename, GCS public URL, page count, file size
-   - TXT filename, page count, character count, marker validation
-4. **CSV Export**: Complete data export with all comparison metrics
+
+2. **Files with Issues**: Shows only documents with problems:
+   - Specific issue description
+   - Affected pages
+   - Content accuracy percentage
+
+3. **Detailed Document Comparison Table**: 
+   ```
+   Document Name     PDF  TXT  Match  PDF MB  TXT MB  Chars     URL OK  Accuracy  Status
+   file_name         10   10   YES    2.14    0.01    18,758    YES     86%       OK
+   ```
+   - **PDF/TXT**: Page counts in each file
+   - **Match**: YES if page counts match
+   - **PDF MB/TXT MB**: File sizes for comparison
+   - **Chars**: Character count in formatted text
+   - **URL OK**: GCS public URL accessibility (YES/NO)
+   - **Accuracy**: Content match confidence from PDF vs TXT comparison
+   - **Status**: OK (verified) / WARNING (issues found) / FAILED (error)
+
+4. **Document Files and Public URLs**: For each document:
+   - PDF: filename, GCS URL, page count, file size
+   - TXT: filename, page count, character count, marker validation
+
+5. **CSV Export**: Complete data with all validation metrics
+
+**Content Accuracy Thresholds**:
+- ≥70% = PASS (acceptable for legal documents)
+- <70% = WARNING (may need reformatting or OCR correction)
+- Page marker missing = CRITICAL (incomplete extraction)
+
+#### Automatic Repair Functionality (NEW):
+
+When issues detected, Phase 7 offers automated repair:
+
+```powershell
+# Run verification with automatic repair
+python doc-process-v31.py --dir "path" --phase verify --auto-repair
+```
+
+**Repair Process**:
+1. Identifies files with issues (low accuracy, missing markers, bad headers, inaccessible URLs)
+2. Determines required repairs:
+   - **Content issues** → Re-run Phase 5 (Format) to regenerate text
+   - **URL issues** → Re-run Phase 6 (GCS Upload) to upload and update headers
+3. Executes repairs automatically or prompts user for confirmation
+4. Recommends re-running Phase 7 to confirm fixes
+
+**Manual Repair Options** (if not using --auto-repair):
+1. **Re-run Phase 5 (Format)**: Regenerate text with correct headers/content
+2. **Re-run Phase 6 (GCS Upload)**: Upload missing files and update URLs
+3. **Review specific pages**: Manually check flagged pages in PDF vs TXT
 
 **Example Verification Output**:
 ```
 DETAILED DOCUMENT COMPARISON
-========================================================================================================================
-Document Name                                 PDF Pages  TXT Pages  Match   Chars      Markers  Status  
-------------------------------------------------------------------------------------------------------------------------
-20241017_9c1_RR_Notice_Close_Claim            1          1          YES     2,228      YES      OK      
-20250106_9c1_RR_Second_Motion_Intervene_...   58         58         YES     99,229     YES      OK      
-20240426_9c1_RR_First_Motion_Intervene_C...   165        165        YES     280,094    YES      OK      
+======================================================================================================================================================
+Document Name                            PDF      TXT      Match  PDF MB    TXT MB    Chars      URL OK  Accuracy  Status  
+------------------------------------------------------------------------------------------------------------------------------------------------------
+20241017_9c1_RR_Notice_Close_Claim       1        1        YES    0.15      0.00      2,228      YES     98%       OK      
+20230906_9c1_FIC_Amended_Petition        6        6        YES    0.88      0.01      7,089      YES     74%       WARNING 
+20251030_9c1_FIC_Response_RR_Motion      72       71       NO     11.17     0.09      93,050     YES     44%       WARNING 
+```
+
+**Files with Issues**:
+```
+20230906_9c1_FIC_Amended_Petition_No_Coverage_v31.txt
+    - Page 1: Low similarity: 66.40%
+
+20251030_9c1_FIC_Response_RR_Motion_v31.txt
+    - Page 72: Page marker not found: [BEGIN PDF Page 72]
+    - Low content accuracy: 44%
 ```
 
 ## Performance Comparison

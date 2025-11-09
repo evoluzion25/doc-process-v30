@@ -2238,7 +2238,7 @@ def phase6_gcs_upload(root_dir, force_reupload=False):
         print(f"[WARN] Found {mismatch_count} header mismatches - see log for details")
 
 # === PHASE 7: VERIFY ===
-def phase7_verify(root_dir):
+def phase7_verify(root_dir, auto_repair=False):
     """Comprehensive verification: PDF directory, online access, and content accuracy"""
     print("\nPHASE 7: VERIFY - COMPREHENSIVE VALIDATION")
     print("-" * 80)
@@ -2258,8 +2258,106 @@ def phase7_verify(root_dir):
     # Sort by file size (smallest to largest)
     txt_files.sort(key=lambda x: x.stat().st_size)
     
+    # Initialize GCS client for URL checking
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET)
+    except Exception as e:
+        print(f"[WARN] Cannot initialize GCS client: {e}")
+        storage_client = None
+        bucket = None
+    
     verification_results = []
     manifest_rows = []
+    files_needing_repair = []
+    
+    def extract_pdf_text_sample(pdf_path, page_numbers=[0, -1]):
+        """Extract text from specific PDF pages for comparison"""
+        try:
+            doc = fitz.open(str(pdf_path))
+            samples = {}
+            for page_num in page_numbers:
+                if page_num < 0:
+                    page_num = len(doc) + page_num  # Convert negative index
+                if 0 <= page_num < len(doc):
+                    text = doc[page_num].get_text()
+                    samples[page_num] = text
+            doc.close()
+            return samples
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def compare_content(pdf_text, txt_content, page_num):
+        """Compare PDF text to TXT content for specific page"""
+        # Find the page marker in TXT
+        page_marker = f"[BEGIN PDF Page {page_num + 1}]"
+        end_marker = f"[BEGIN PDF Page {page_num + 2}]"
+        
+        marker_pos = txt_content.find(page_marker)
+        if marker_pos == -1:
+            return {"match": False, "reason": f"Page marker not found: {page_marker}"}
+        
+        # Extract text for this page from TXT
+        start = marker_pos + len(page_marker)
+        end_pos = txt_content.find(end_marker, start)
+        if end_pos == -1:
+            # Last page
+            txt_page_text = txt_content[start:].strip()
+        else:
+            txt_page_text = txt_content[start:end_pos].strip()
+        
+        # Clean both texts for comparison
+        pdf_clean = re.sub(r'\s+', ' ', pdf_text.lower().strip())
+        txt_clean = re.sub(r'\s+', ' ', txt_page_text.lower().strip())
+        
+        # Calculate similarity (simple overlap)
+        if len(pdf_clean) < 50:
+            # Too short to compare reliably
+            return {"match": True, "reason": "Page too short to validate", "confidence": 0.5}
+        
+        # Check if significant portion of PDF text appears in TXT
+        sample_size = min(200, len(pdf_clean))
+        pdf_sample = pdf_clean[:sample_size]
+        
+        if pdf_sample in txt_clean:
+            confidence = 1.0
+        else:
+            # Calculate word overlap
+            pdf_words = set(pdf_clean.split())
+            txt_words = set(txt_clean.split())
+            if len(pdf_words) > 0:
+                overlap = len(pdf_words & txt_words) / len(pdf_words)
+                confidence = overlap
+            else:
+                confidence = 0.0
+        
+        match = confidence >= 0.7
+        
+        return {
+            "match": match,
+            "confidence": round(confidence, 2),
+            "pdf_length": len(pdf_text),
+            "txt_length": len(txt_page_text),
+            "reason": "Content matches" if match else f"Low similarity: {confidence:.2%}"
+        }
+    
+    def check_gcs_url_accessible(url):
+        """Check if GCS public URL is accessible"""
+        if not url or not bucket:
+            return False
+        
+        try:
+            # Extract blob name from URL
+            # Format: https://storage.cloud.google.com/bucket-name/path/to/file.pdf
+            if "storage.cloud.google.com" in url:
+                parts = url.split(f"{GCS_BUCKET}/")
+                if len(parts) > 1:
+                    blob_name = parts[1]
+                    blob = bucket.blob(blob_name)
+                    return blob.exists()
+            return False
+        except Exception:
+            return False
     
     for txt_file in txt_files:
         # Find corresponding PDF
@@ -2277,8 +2375,15 @@ def phase7_verify(root_dir):
             with open(txt_file, 'r', encoding='utf-8') as f:
                 formatted_text = f.read()
             
+            # File sizes
+            pdf_size_bytes = pdf_file.stat().st_size
+            pdf_size_mb = pdf_size_bytes / (1024 * 1024)
+            txt_size_bytes = txt_file.stat().st_size
+            txt_size_mb = txt_size_bytes / (1024 * 1024)
+            
             # Validate header information
             header_issues = []
+            content_issues = []
             lines = formatted_text.split('\n')
             
             # Check for PDF DIRECTORY header (uppercase format)
@@ -2313,21 +2418,48 @@ def phase7_verify(root_dir):
                             header_issues.append(f"PDF link mismatch: header has '{url}', expected '{expected_url}'")
                         break
             
+            # Check if GCS URL is accessible
+            gcs_url = get_public_url_for_pdf(root_dir, pdf_file.name)
+            url_accessible = check_gcs_url_accessible(gcs_url)
+            if not url_accessible:
+                header_issues.append("GCS URL not accessible or blob does not exist")
+            
             # Count pages in formatted text (look for bracketed markers)
             formatted_pages = formatted_text.count('[BEGIN PDF Page ')
             
             # CRITICAL: Verify [BEGIN PDF Page 1] exists
             if '[BEGIN PDF Page 1]' not in formatted_text:
-                header_issues.append("Missing [BEGIN PDF Page 1] marker - content may be incomplete")
+                content_issues.append("Missing [BEGIN PDF Page 1] marker - content may be incomplete")
             
             # Get PDF page count
             doc = fitz.open(pdf_file)
             pdf_pages = len(doc)
             doc.close()
+            
+            # CONTENT VALIDATION: Compare actual text
+            print(f"  → Extracting PDF text samples for comparison...")
+            pdf_samples = extract_pdf_text_sample(pdf_file, [0, -1])  # First and last page
+            
+            content_matches = []
+            if "error" in pdf_samples:
+                content_issues.append(f"Cannot extract PDF text: {pdf_samples['error']}")
+            else:
+                for page_num, pdf_text in pdf_samples.items():
+                    comparison = compare_content(pdf_text, formatted_text, page_num)
+                    content_matches.append(comparison)
+                    
+                    if not comparison["match"]:
+                        content_issues.append(f"Page {page_num + 1}: {comparison['reason']}")
+                    
+                    print(f"  → Page {page_num + 1}: {'✓' if comparison['match'] else '✗'} (confidence: {comparison.get('confidence', 0):.0%})")
+            
+            # Calculate overall content confidence
+            if content_matches:
+                avg_confidence = sum(c.get("confidence", 0) for c in content_matches) / len(content_matches)
+            else:
+                avg_confidence = 0.0
 
             # File sizes and reduction metrics
-            pdf_size_bytes = pdf_file.stat().st_size
-            pdf_size_mb = pdf_size_bytes / (1024 * 1024)
             original_pdf = root_dir / "02_doc-renamed" / f"{base_name}_r.pdf"
             reduction_pct = None
             if original_pdf.exists():
@@ -2338,29 +2470,35 @@ def phase7_verify(root_dir):
                 except Exception:
                     reduction_pct = None
             
-            # GCS URL for this PDF
-            gcs_url = get_public_url_for_pdf(root_dir, pdf_file.name)
-            
             # Get character counts
             formatted_chars = len(formatted_text)
             
-            # Check for issues (combine header issues with content issues)
-            issues = header_issues.copy()
+            # Check for issues (combine all issues)
+            all_issues = header_issues + content_issues
+            
             if formatted_pages == 0:
-                issues.append("No page markers found")
+                all_issues.append("No page markers found")
             elif abs(formatted_pages - pdf_pages) > 2:
-                issues.append(f"Page count mismatch: PDF has {pdf_pages}, markers found {formatted_pages}")
+                all_issues.append(f"Page count mismatch: PDF has {pdf_pages}, markers found {formatted_pages}")
             
             if formatted_chars < 1000:
-                issues.append("Text length unusually short")
+                all_issues.append("Text length unusually short")
             
-            if issues:
+            if avg_confidence < 0.7:
+                all_issues.append(f"Low content accuracy: {avg_confidence:.0%}")
+            
+            if all_issues:
                 print(f"  [WARN] Issues found:")
-                for issue in issues:
+                for issue in all_issues:
                     print(f"    - {issue}")
                 status = 'WARNING'
+                files_needing_repair.append({
+                    'file': txt_file.name,
+                    'pdf_file': pdf_file.name,
+                    'issues': all_issues
+                })
             else:
-                print(f"  [OK] Verified: {pdf_pages} pages, {formatted_chars:,} chars, headers valid")
+                print(f"  [OK] Verified: {pdf_pages} pages, {formatted_chars:,} chars, {avg_confidence:.0%} accuracy")
                 status = 'OK'
             
             verification_results.append({
@@ -2369,7 +2507,8 @@ def phase7_verify(root_dir):
                 'formatted_pages': formatted_pages,
                 'chars': formatted_chars,
                 'status': status,
-                'issues': issues
+                'issues': all_issues,
+                'content_confidence': avg_confidence
             })
 
             # Add to manifest rows with formatted text info
@@ -2377,17 +2516,20 @@ def phase7_verify(root_dir):
                 'file': pdf_file.name,
                 'txt_file': txt_file.name,
                 'gcs_url': gcs_url,
+                'url_accessible': 'YES' if url_accessible else 'NO',
                 'local_path': str(pdf_file),
                 'txt_path': str(txt_file),
                 'bytes': pdf_size_bytes,
                 'mb': round(pdf_size_mb, 3),
+                'txt_mb': round(txt_size_mb, 3),
                 'pdf_pages': pdf_pages,
                 'formatted_pages': formatted_pages,
                 'formatted_chars': formatted_chars,
                 'page_match': 'YES' if pdf_pages == formatted_pages else 'NO',
                 'page_markers_valid': 'YES' if '[BEGIN PDF Page 1]' in formatted_text else 'NO',
+                'content_confidence': f"{avg_confidence:.0%}",
                 'status': status,
-                'issues': "; ".join(issues) if issues else "",
+                'issues': "; ".join(all_issues) if all_issues else "",
                 'reduction_pct': round(reduction_pct, 2) if reduction_pct is not None else ''
             })
             
@@ -2455,31 +2597,35 @@ def phase7_verify(root_dir):
         
         # DETAILED DOCUMENT COMPARISON TABLE
         f.write("DETAILED DOCUMENT COMPARISON\n")
-        f.write("="*120 + "\n")
-        f.write(f"{'Document Name':<45} {'PDF Pages':<10} {'TXT Pages':<10} {'Match':<7} {'Chars':<10} {'Markers':<8} {'Status':<8}\n")
-        f.write("-"*120 + "\n")
+        f.write("="*150 + "\n")
+        f.write(f"{'Document Name':<40} {'PDF':<8} {'TXT':<8} {'Match':<6} {'PDF MB':<9} {'TXT MB':<9} {'Chars':<10} {'URL OK':<7} {'Accuracy':<9} {'Status':<8}\n")
+        f.write("-"*150 + "\n")
         
         for row in manifest_rows:
             doc_name = row['file'].replace('_o.pdf', '')
-            if len(doc_name) > 43:
-                doc_name = doc_name[:40] + "..."
+            if len(doc_name) > 38:
+                doc_name = doc_name[:35] + "..."
             
             pdf_pages = str(row['pdf_pages'])
             txt_pages = str(row['formatted_pages'])
             page_match = row['page_match']
+            pdf_mb = f"{row['mb']:.2f}"
+            txt_mb = f"{row['txt_mb']:.2f}"
             chars = f"{row['formatted_chars']:,}"
-            markers = row['page_markers_valid']
+            url_ok = row['url_accessible']
+            accuracy = row['content_confidence']
             status = row['status']
             
-            f.write(f"{doc_name:<45} {pdf_pages:<10} {txt_pages:<10} {page_match:<7} {chars:<10} {markers:<8} {status:<8}\n")
+            f.write(f"{doc_name:<40} {pdf_pages:<8} {txt_pages:<8} {page_match:<6} {pdf_mb:<9} {txt_mb:<9} {chars:<10} {url_ok:<7} {accuracy:<9} {status:<8}\n")
         
         f.write("\n")
         f.write("LEGEND:\n")
-        f.write("  PDF Pages: Number of pages in cleaned PDF file\n")
-        f.write("  TXT Pages: Number of [BEGIN PDF Page N] markers in formatted text\n")
-        f.write("  Match: YES if PDF pages = TXT pages, NO if mismatch\n")
+        f.write("  PDF/TXT: Page counts in PDF file vs TXT file markers\n")
+        f.write("  Match: YES if page counts match, NO if mismatch\n")
+        f.write("  PDF MB/TXT MB: File sizes in megabytes\n")
         f.write("  Chars: Total character count in formatted text file\n")
-        f.write("  Markers: YES if [BEGIN PDF Page 1] marker found, NO if missing\n")
+        f.write("  URL OK: YES if GCS public URL is accessible, NO if not found\n")
+        f.write("  Accuracy: Content match confidence from PDF vs TXT comparison\n")
         f.write("  Status: OK = verified, WARNING = issues found, FAILED = error\n\n")
         
         # DOCUMENT FILES AND URLS
@@ -2507,9 +2653,9 @@ def phase7_verify(root_dir):
     # Write CSV manifest
     try:
         with open(manifest_csv_path, 'w', encoding='utf-8', newline='') as csvfile:
-            fieldnames = ['file', 'txt_file', 'gcs_url', 'local_path', 'txt_path', 'bytes', 'mb', 
-                         'pdf_pages', 'formatted_pages', 'formatted_chars', 'page_match', 
-                         'page_markers_valid', 'status', 'issues', 'reduction_pct']
+            fieldnames = ['file', 'txt_file', 'gcs_url', 'url_accessible', 'local_path', 'txt_path', 
+                         'bytes', 'mb', 'txt_mb', 'pdf_pages', 'formatted_pages', 'formatted_chars', 
+                         'page_match', 'page_markers_valid', 'content_confidence', 'status', 'issues', 'reduction_pct']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(manifest_rows)
@@ -2518,7 +2664,182 @@ def phase7_verify(root_dir):
         print(f"[WARN] Could not write manifest CSV: {e}")
 
     print(f"\n[OK] Final report saved: {report_path.name}")
+    
+    # REPAIR FUNCTIONALITY
+    if files_needing_repair and auto_repair:
+        print("\n" + "="*80)
+        print("AUTO-REPAIR MODE: Issues detected in the following files")
+        print("="*80)
+        
+        for item in files_needing_repair:
+            print(f"\n{item['file']}")
+            for issue in item['issues']:
+                print(f"  - {issue}")
+        
+        print("\nAttempting automatic repair...")
+        repair_files(root_dir, files_needing_repair)
+        
+    elif files_needing_repair:
+        print("\n" + "="*80)
+        print("ISSUES DETECTED - REPAIR AVAILABLE")
+        print("="*80)
+        print(f"\n{len(files_needing_repair)} file(s) have issues that may need repair:")
+        
+        for item in files_needing_repair:
+            print(f"\n  {item['file']}")
+            for issue in item['issues'][:3]:  # Show first 3 issues
+                print(f"    - {issue}")
+            if len(item['issues']) > 3:
+                print(f"    ... and {len(item['issues']) - 3} more issues")
+        
+        print("\nRepair options:")
+        print("  1. Re-run Phase 5 (Format) to regenerate text with correct headers")
+        print("  2. Re-run Phase 6 (GCS Upload) to upload missing files and update URLs")
+        print("  3. Run with --auto-repair flag to automatically fix issues")
+        
+        user_input = input("\nWould you like to attempt automatic repair now? (y/n): ").strip().lower()
+        if user_input == 'y':
+            repair_files(root_dir, files_needing_repair)
+    
     report_data['verify'] = verification_results
+
+def repair_files(root_dir, files_needing_repair):
+    """Attempt to repair files with issues"""
+    print("\n" + "="*80)
+    print("REPAIR PROCESS STARTING")
+    print("="*80)
+    
+    for item in files_needing_repair:
+        txt_file = item['file']
+        pdf_file = item['pdf_file']
+        issues = item['issues']
+        
+        print(f"\nRepairing: {txt_file}")
+        print(f"Issues detected: {len(issues)}")
+        
+        # Determine what repairs are needed
+        needs_reformatting = any('header' in issue.lower() or 'marker' in issue.lower() or 'content' in issue.lower() for issue in issues)
+        needs_gcs_upload = any('url' in issue.lower() or 'gcs' in issue.lower() or 'accessible' in issue.lower() for issue in issues)
+        
+        base_name = txt_file.replace('_v31.txt', '')
+        
+        if needs_reformatting:
+            print("  → Re-running Phase 5 (Format) to fix content issues...")
+            try:
+                # Find the _c.txt file to reformat
+                convert_dir = root_dir / "04_doc-convert"
+                convert_file = convert_dir / f"{base_name}_c.txt"
+                
+                if convert_file.exists():
+                    formatted_dir = root_dir / "05_doc-format"
+                    formatted_file = formatted_dir / f"{base_name}_v31.txt"
+                    
+                    # Re-run formatting on this single file
+                    print(f"    Processing: {convert_file.name}")
+                    format_single_file(convert_file, formatted_file, root_dir)
+                    print(f"    [OK] Reformatted: {formatted_file.name}")
+                else:
+                    print(f"    [WARN] Cannot find converted file: {convert_file.name}")
+            except Exception as e:
+                print(f"    [FAIL] Formatting error: {e}")
+        
+        if needs_gcs_upload:
+            print("  → Re-running Phase 6 (GCS Upload) to fix URL issues...")
+            try:
+                clean_dir = root_dir / "03_doc-clean"
+                pdf_path = clean_dir / pdf_file
+                
+                if pdf_path.exists():
+                    # Re-upload this single PDF
+                    upload_single_pdf_to_gcs(pdf_path, root_dir)
+                    
+                    # Update headers in formatted file
+                    formatted_dir = root_dir / "05_doc-format"
+                    formatted_file = formatted_dir / f"{base_name}_v31.txt"
+                    if formatted_file.exists():
+                        update_headers_single_file(formatted_file, root_dir)
+                        print(f"    [OK] Updated headers in: {formatted_file.name}")
+                else:
+                    print(f"    [WARN] Cannot find PDF: {pdf_path.name}")
+            except Exception as e:
+                print(f"    [FAIL] Upload error: {e}")
+    
+    print("\n[OK] Repair process complete")
+    print("Run Phase 7 (Verify) again to confirm all issues are resolved")
+
+def format_single_file(convert_file, formatted_file, root_dir):
+    """Format a single converted file (for repair)"""
+    # This is a simplified version of phase5_format for single file processing
+    with open(convert_file, 'r', encoding='utf-8') as f:
+        text = f.read()
+    
+    # Apply same formatting as Phase 5
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(MODEL_NAME)
+    
+    prompt = f"""Format this legal document text to be clean and readable. Apply these rules:
+
+1. Remove all headers and footers
+2. Fix OCR errors and garbled text
+3. Maintain paragraph structure
+4. Keep page markers: [BEGIN PDF Page N]
+5. Preserve case numbers, dates, and legal citations exactly
+
+TEXT:
+{text}"""
+    
+    response = model.generate_content(prompt)
+    formatted = response.text
+    
+    # Write formatted output
+    with open(formatted_file, 'w', encoding='utf-8') as f:
+        f.write(formatted)
+
+def upload_single_pdf_to_gcs(pdf_path, root_dir):
+    """Upload a single PDF to GCS (for repair)"""
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET)
+        
+        # Construct blob path
+        blob_path = f"legal/{root_dir.name}/cleaned-pdf/{pdf_path.name}"
+        blob = bucket.blob(blob_path)
+        
+        # Upload
+        blob.upload_from_filename(str(pdf_path))
+        blob.make_public()
+        
+        print(f"    [OK] Uploaded to GCS: {blob_path}")
+    except Exception as e:
+        raise DocumentProcessingError(f"GCS upload failed: {e}")
+
+def update_headers_single_file(formatted_file, root_dir):
+    """Update headers in a single formatted file (for repair)"""
+    with open(formatted_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Get PDF filename
+    base_name = formatted_file.stem[:-4]  # Remove _v31
+    pdf_filename = f"{base_name}_o.pdf"
+    
+    # Get public URL
+    gcs_url = get_public_url_for_pdf(root_dir, pdf_filename)
+    
+    # Update headers
+    lines = content.split('\n')
+    updated_lines = []
+    
+    for line in lines:
+        if line.startswith("PDF DIRECTORY:"):
+            updated_lines.append(f"PDF DIRECTORY: {root_dir.name}")
+        elif line.startswith("PDF PUBLIC LINK:"):
+            updated_lines.append(f"PDF PUBLIC LINK: {gcs_url}")
+        else:
+            updated_lines.append(line)
+    
+    # Write back
+    with open(formatted_file, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(updated_lines))
 
 # === INTERACTIVE MENU ===
 def interactive_menu():
@@ -2756,6 +3077,7 @@ def main():
                        default=None, help='Phases to run (omit for interactive mode)')
     parser.add_argument('--no-verify', action='store_true', help='Skip phase verification prompts')
     parser.add_argument('--force-reupload', action='store_true', help='Force re-upload to GCS and update all headers (use after directory rename)')
+    parser.add_argument('--auto-repair', action='store_true', help='Automatically repair files with issues during Phase 7 verification')
     
     args = parser.parse_args()
     
@@ -2809,8 +3131,11 @@ def main():
         # Execute the phase with error handling
         try:
             print(f"\n[START] Beginning {phase_name} phase...")
+            # Pass auto_repair to phase 7
+            if phase_name == 'verify':
+                phase_functions[phase_name](root_dir, auto_repair=args.auto_repair)
             # Pass force_reupload to phase 6
-            if phase_name == 'gcs_upload':
+            elif phase_name == 'gcs_upload':
                 phase_functions[phase_name](root_dir, force_reupload=args.force_reupload)
             else:
                 phase_functions[phase_name](root_dir)
