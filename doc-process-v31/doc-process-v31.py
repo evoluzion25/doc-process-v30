@@ -1929,21 +1929,27 @@ def phase6_gcs_upload(root_dir, force_reupload=False):
     print(f"[OK] Document catalog created: {document_catalog_path.name}")
     print(f"[INFO] Found {len(pdf_files)} PDFs to process")
     
-    # STEP 3: Verify or create GCS directory structure
+    # STEP 3: Verify or create GCS directory structure AND DELETE ALL EXISTING FILES
     print("\n[STEP 3] Verifying GCS directory structure...")
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(GCS_BUCKET)
         
-        # Check if GCS directory exists (any blob with this prefix)
-        existing_blobs = list(storage_client.list_blobs(GCS_BUCKET, prefix=gcs_prefix + '/', max_results=1))
+        # Check if GCS directory exists and delete all files in it
+        print(f"[DELETE] Removing all existing files in gs://{GCS_BUCKET}/{gcs_prefix}/")
+        existing_blobs = list(storage_client.list_blobs(GCS_BUCKET, prefix=gcs_prefix + '/'))
+        
         if existing_blobs:
-            print(f"[OK] GCS directory exists: gs://{GCS_BUCKET}/{gcs_prefix}/")
+            deleted_count = 0
+            for blob in existing_blobs:
+                blob.delete()
+                deleted_count += 1
+            print(f"[OK] Deleted {deleted_count} existing file(s) from GCS directory")
         else:
-            print(f"[INFO] GCS directory does not exist yet (will be created on first upload)")
+            print(f"[INFO] GCS directory is empty or does not exist yet (will be created on first upload)")
         
     except Exception as e:
-        print(f"[WARN] Could not verify GCS structure: {e}")
+        print(f"[WARN] Could not verify/clean GCS structure: {e}")
         print(f"[INFO] Will attempt to create on upload")
     
     # STEP 4: Delete all items in old directory (if force_reupload) and reupload all files
