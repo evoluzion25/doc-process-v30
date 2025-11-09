@@ -481,12 +481,39 @@ END OF PROCESSED DOCUMENT
 ### Phase 7: Verify
 - **Input**: `03_doc-clean/*_o.pdf` + `04_doc-convert/*_c.txt` + `05_doc-format/*_v31.txt`
 - **Output**: Verification report + PDF manifest CSV
-- **Action**: Comprehensive validation
-  - PDF Directory header validation (matches actual folder path)
-  - PDF Public Link format validation (proper URL format)
-  - Page count accuracy (PDF vs text file)
-  - Character count validation
-  - File completeness checks
+- **Action**: Comprehensive validation with detailed comparison tables
+  - **PDF Directory header validation**: Verifies header matches actual folder path
+  - **PDF Public Link format validation**: Ensures proper public URL format
+  - **Page count comparison**: Compares PDF pages vs [BEGIN PDF Page N] markers in text
+  - **Page marker validation**: Confirms [BEGIN PDF Page 1] exists in all documents
+  - **Character count tracking**: Records total characters in formatted text
+  - **File completeness checks**: Ensures all files present in pipeline
+  
+**Verification Report Sections**:
+1. **Summary**: Total files, verified count, warnings, failures
+2. **Detailed Document Comparison Table**: 
+   - Document name
+   - PDF pages (from cleaned PDF)
+   - TXT pages (count of page markers)
+   - Match status (YES/NO)
+   - Character count
+   - Marker validation (YES/NO)
+   - Overall status (OK/WARNING/FAILED)
+3. **Document Files and Public URLs**: For each document shows:
+   - PDF filename, GCS public URL, page count, file size
+   - TXT filename, page count, character count, marker validation
+4. **CSV Export**: Complete data export with all comparison metrics
+
+**Example Verification Output**:
+```
+DETAILED DOCUMENT COMPARISON
+========================================================================================================================
+Document Name                                 PDF Pages  TXT Pages  Match   Chars      Markers  Status  
+------------------------------------------------------------------------------------------------------------------------
+20241017_9c1_RR_Notice_Close_Claim            1          1          YES     2,228      YES      OK      
+20250106_9c1_RR_Second_Motion_Intervene_...   58         58         YES     99,229     YES      OK      
+20240426_9c1_RR_First_Motion_Intervene_C...   165        165        YES     280,094    YES      OK      
+```
 
 ## Performance Comparison
 

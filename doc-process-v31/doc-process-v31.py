@@ -2281,31 +2281,29 @@ def phase7_verify(root_dir):
             header_issues = []
             lines = formatted_text.split('\n')
             
-            # Check for PDF Directory header
-            if not any(line.startswith("PDF Directory:") for line in lines[:10]):
-                header_issues.append("Missing PDF Directory header")
+            # Check for PDF DIRECTORY header (uppercase format)
+            if not any(line.startswith("PDF DIRECTORY:") for line in lines[:10]):
+                header_issues.append("Missing PDF DIRECTORY header")
             else:
                 # Validate PDF Directory path
                 for line in lines[:10]:
-                    if line.startswith("PDF Directory:"):
-                        pdf_dir = line.replace("PDF Directory:", "").strip()
-                        # Get expected directory from root_dir
-                        full_path = str(root_dir).replace('\\', '/')
-                        if full_path.startswith('E:/') or full_path.startswith('e:/'):
-                            full_path = full_path[3:]
-                        if pdf_dir != full_path:
-                            header_issues.append(f"PDF Directory mismatch: expected '{full_path}', found '{pdf_dir}'")
+                    if line.startswith("PDF DIRECTORY:"):
+                        pdf_dir = line.replace("PDF DIRECTORY:", "").strip()
+                        # Get expected directory name from root_dir
+                        expected_dir = root_dir.name
+                        if pdf_dir != expected_dir:
+                            header_issues.append(f"PDF Directory mismatch: expected '{expected_dir}', found '{pdf_dir}'")
                         break
             
-            # Check for PDF Public Link header
+            # Check for PDF PUBLIC LINK header (uppercase format)
             pdf_link_in_header = None
-            if not any(line.startswith("PDF Public Link:") for line in lines[:10]):
-                header_issues.append("Missing PDF Public Link header")
+            if not any(line.startswith("PDF PUBLIC LINK:") for line in lines[:10]):
+                header_issues.append("Missing PDF PUBLIC LINK header")
             else:
                 # Validate URL is public format and matches expected
                 for line in lines[:10]:
-                    if line.startswith("PDF Public Link:"):
-                        url = line.replace("PDF Public Link:", "").strip()
+                    if line.startswith("PDF PUBLIC LINK:"):
+                        url = line.replace("PDF PUBLIC LINK:", "").strip()
                         pdf_link_in_header = url
                         if not url.startswith("https://storage.cloud.google.com/"):
                             header_issues.append(f"URL not in public format: {url}")
@@ -2374,15 +2372,20 @@ def phase7_verify(root_dir):
                 'issues': issues
             })
 
-            # Add to manifest rows
+            # Add to manifest rows with formatted text info
             manifest_rows.append({
                 'file': pdf_file.name,
+                'txt_file': txt_file.name,
                 'gcs_url': gcs_url,
                 'local_path': str(pdf_file),
+                'txt_path': str(txt_file),
                 'bytes': pdf_size_bytes,
                 'mb': round(pdf_size_mb, 3),
                 'pdf_pages': pdf_pages,
                 'formatted_pages': formatted_pages,
+                'formatted_chars': formatted_chars,
+                'page_match': 'YES' if pdf_pages == formatted_pages else 'NO',
+                'page_markers_valid': 'YES' if '[BEGIN PDF Page 1]' in formatted_text else 'NO',
                 'status': status,
                 'issues': "; ".join(issues) if issues else "",
                 'reduction_pct': round(reduction_pct, 2) if reduction_pct is not None else ''
@@ -2419,36 +2422,94 @@ def phase7_verify(root_dir):
         f.write(f"Warnings: {warn_count}\n")
         f.write(f"Failed: {fail_count}\n\n")
         
-        # PDF MANIFEST SECTION
-        f.write("PDF MANIFEST\n")
-        f.write("-"*80 + "\n")
-        f.write("File, Size (MB), Pages, Status, Reduction (%), GCS URL\n")
-        for row in manifest_rows:
-            size_str = f"{row['mb']:.3f}"
-            red_str = f"{row['reduction_pct']}" if row['reduction_pct'] != '' else ""
-            f.write(f"{row['file']}, {size_str}, {row['pdf_pages']}, {row['status']}, {red_str}, {row['gcs_url']}\n")
-
-        f.write("\nDETAILED RESULTS\n")
-        f.write("-"*80 + "\n")
+        # PDF MANIFEST TABLE - Only show files with actual issues
+        if warn_count > 0 or fail_count > 0:
+            f.write("FILES WITH ISSUES\n")
+            f.write("-"*80 + "\n")
+            f.write(f"{'File':<55} {'Status':<10} {'Pages':<8} {'Issues'}\n")
+            f.write("-"*80 + "\n")
+            
+            for result in verification_results:
+                if result.get('status') in ['WARNING', 'FAILED']:
+                    filename = result['file'][:53] + ".." if len(result['file']) > 55 else result['file']
+                    pages = f"{result.get('pdf_pages', 'N/A')}/{result.get('formatted_pages', 'N/A')}"
+                    
+                    if result.get('issues'):
+                        # First issue on same line as file info
+                        first_issue = result['issues'][0]
+                        f.write(f"{filename:<55} {result.get('status', 'UNKNOWN'):<10} {pages:<8} {first_issue}\n")
+                        
+                        # Remaining issues indented
+                        for issue in result['issues'][1:]:
+                            f.write(f"{'':<55} {'':<10} {'':<8} {issue}\n")
+                    elif result.get('error'):
+                        f.write(f"{filename:<55} {result.get('status', 'UNKNOWN'):<10} {pages:<8} {result['error']}\n")
+                    else:
+                        f.write(f"{filename:<55} {result.get('status', 'UNKNOWN'):<10} {pages:<8}\n")
+            
+            f.write("\n")
+        else:
+            f.write("ALL FILES VERIFIED SUCCESSFULLY\n")
+            f.write("-"*80 + "\n")
+            f.write("No issues found. All documents processed correctly.\n\n")
         
-        for result in verification_results:
-            f.write(f"\nFile: {result['file']}\n")
-            f.write(f"Status: {result.get('status', 'UNKNOWN')}\n")
-            if 'pdf_pages' in result:
-                f.write(f"PDF Pages: {result['pdf_pages']}\n")
-                f.write(f"Formatted Pages: {result['formatted_pages']}\n")
-                f.write(f"Characters: {result['chars']:,}\n")
-            if result.get('issues'):
-                f.write("Issues:\n")
-                for issue in result['issues']:
-                    f.write(f"  - {issue}\n")
-            if result.get('error'):
-                f.write(f"Error: {result['error']}\n")
+        # DETAILED DOCUMENT COMPARISON TABLE
+        f.write("DETAILED DOCUMENT COMPARISON\n")
+        f.write("="*120 + "\n")
+        f.write(f"{'Document Name':<45} {'PDF Pages':<10} {'TXT Pages':<10} {'Match':<7} {'Chars':<10} {'Markers':<8} {'Status':<8}\n")
+        f.write("-"*120 + "\n")
+        
+        for row in manifest_rows:
+            doc_name = row['file'].replace('_o.pdf', '')
+            if len(doc_name) > 43:
+                doc_name = doc_name[:40] + "..."
+            
+            pdf_pages = str(row['pdf_pages'])
+            txt_pages = str(row['formatted_pages'])
+            page_match = row['page_match']
+            chars = f"{row['formatted_chars']:,}"
+            markers = row['page_markers_valid']
+            status = row['status']
+            
+            f.write(f"{doc_name:<45} {pdf_pages:<10} {txt_pages:<10} {page_match:<7} {chars:<10} {markers:<8} {status:<8}\n")
+        
+        f.write("\n")
+        f.write("LEGEND:\n")
+        f.write("  PDF Pages: Number of pages in cleaned PDF file\n")
+        f.write("  TXT Pages: Number of [BEGIN PDF Page N] markers in formatted text\n")
+        f.write("  Match: YES if PDF pages = TXT pages, NO if mismatch\n")
+        f.write("  Chars: Total character count in formatted text file\n")
+        f.write("  Markers: YES if [BEGIN PDF Page 1] marker found, NO if missing\n")
+        f.write("  Status: OK = verified, WARNING = issues found, FAILED = error\n\n")
+        
+        # DOCUMENT FILES AND URLS
+        f.write("DOCUMENT FILES AND PUBLIC URLS\n")
+        f.write("="*120 + "\n")
+        
+        for row in manifest_rows:
+            base_name = row['file'].replace('_o.pdf', '')
+            
+            f.write(f"\n{base_name}\n")
+            f.write("-"*120 + "\n")
+            
+            # PDF info
+            f.write(f"  PDF (Cleaned):     {row['file']}\n")
+            f.write(f"                     {row['gcs_url']}\n")
+            f.write(f"                     Pages: {row['pdf_pages']}, Size: {row['mb']:.2f} MB\n")
+            
+            # TXT info
+            f.write(f"\n  TXT (Formatted):   {row['txt_file']}\n")
+            f.write(f"                     Pages: {row['formatted_pages']}, Characters: {row['formatted_chars']:,}\n")
+            f.write(f"                     Page Markers Valid: {row['page_markers_valid']}\n")
+        
+        f.write("\n")
     
     # Write CSV manifest
     try:
         with open(manifest_csv_path, 'w', encoding='utf-8', newline='') as csvfile:
-            fieldnames = ['file', 'gcs_url', 'local_path', 'bytes', 'mb', 'pdf_pages', 'formatted_pages', 'status', 'issues', 'reduction_pct']
+            fieldnames = ['file', 'txt_file', 'gcs_url', 'local_path', 'txt_path', 'bytes', 'mb', 
+                         'pdf_pages', 'formatted_pages', 'formatted_chars', 'page_match', 
+                         'page_markers_valid', 'status', 'issues', 'reduction_pct']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(manifest_rows)
