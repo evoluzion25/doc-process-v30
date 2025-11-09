@@ -2741,21 +2741,28 @@ def repair_files(root_dir, files_needing_repair):
         print(f"\nRepairing: {txt_file}")
         print(f"Issues detected: {len(issues)}")
         
-        # Parse issues to determine repair strategy
+        # Parse issues to determine repair strategy and identify specific pages
         has_low_accuracy = False
         accuracy_value = None
         has_header_issues = False
         has_marker_issues = False
         has_url_issues = False
+        problem_pages = []  # Track specific pages with issues
         
         for issue in issues:
             issue_lower = issue.lower()
+            
+            # Extract specific page numbers with issues
+            import re
+            page_match = re.search(r'page (\d+):', issue_lower)
+            if page_match:
+                page_num = int(page_match.group(1))
+                problem_pages.append(page_num)
             
             # Check for low accuracy
             if 'accuracy' in issue_lower or 'similarity' in issue_lower:
                 has_low_accuracy = True
                 # Extract accuracy percentage
-                import re
                 match = re.search(r'(\d+)%', issue)
                 if match:
                     accuracy_value = int(match.group(1))
@@ -2770,12 +2777,16 @@ def repair_files(root_dir, files_needing_repair):
         
         base_name = txt_file.replace('_v31.txt', '')
         
-        # STRATEGY 1: Low accuracy issues - reprocess PDF with enhanced OCR
+        # STRATEGY 1: Low accuracy issues - TARGETED page repair if specific pages identified
         if has_low_accuracy:
             print(f"  [STRATEGY] Low accuracy detected ({accuracy_value}%)")
             
-            if accuracy_value and accuracy_value < 50:
-                print(f"  [ACTION] Critical accuracy (<50%) - Reprocessing PDF with enhanced OCR")
+            # If we have specific problem pages, do targeted repair
+            if problem_pages:
+                print(f"  [ACTION] Targeted repair - fixing {len(problem_pages)} specific pages: {problem_pages}")
+                repair_specific_pages(root_dir, base_name, problem_pages, accuracy_value)
+            elif accuracy_value and accuracy_value < 50:
+                print(f"  [ACTION] Critical accuracy (<50%) - Reprocessing entire PDF with enhanced OCR")
                 # Re-run Phase 3 (Clean) with enhanced settings for this specific file
                 reprocess_pdf_enhanced(root_dir, base_name)
                 # Re-run Phase 4 (Convert) to extract text again
@@ -2816,6 +2827,119 @@ def repair_files(root_dir, files_needing_repair):
     
     print("\n[OK] Repair process complete")
     print("[INFO] Run Phase 7 (Verify) again to confirm all issues are resolved")
+
+def repair_specific_pages(root_dir, base_name, problem_pages, overall_accuracy):
+    """Surgically repair only the specific pages with low accuracy"""
+    print(f"    [TARGETED] Repairing pages: {problem_pages}")
+    
+    format_dir = root_dir / "05_doc-format"
+    formatted_file = format_dir / f"{base_name}_v31.txt"
+    
+    if not formatted_file.exists():
+        print(f"    [ERROR] Formatted file not found: {formatted_file}")
+        return
+    
+    try:
+        # Read current formatted file
+        with open(formatted_file, 'r', encoding='utf-8') as f:
+            full_text = f.read()
+        
+        # Extract header, body, footer
+        body_start = full_text.find("BEGINNING OF PROCESSED DOCUMENT")
+        footer_start = full_text.find("=====================================================================\nEND OF PROCESSED DOCUMENT")
+        
+        if body_start < 0 or footer_start < 0:
+            print(f"    [ERROR] Template markers not found")
+            return
+        
+        body_start_line = full_text.find("\n", body_start + len("BEGINNING OF PROCESSED DOCUMENT"))
+        body_start_line = full_text.find("\n", body_start_line + 1)
+        body_start_content = body_start_line + 1
+        
+        header = full_text[:body_start_content]
+        body = full_text[body_start_content:footer_start].strip()
+        footer = full_text[footer_start:]
+        
+        # Split body into pages
+        import re
+        page_pattern = r'(\[BEGIN PDF Page \d+\])'
+        parts = re.split(page_pattern, body)
+        
+        # Reconstruct as list of (marker, content) tuples
+        pages = []
+        for i in range(1, len(parts), 2):
+            if i < len(parts):
+                marker = parts[i]
+                content = parts[i + 1] if i + 1 < len(parts) else ""
+                # Extract page number from marker
+                page_num_match = re.search(r'\[BEGIN PDF Page (\d+)\]', marker)
+                if page_num_match:
+                    page_num = int(page_num_match.group(1))
+                    pages.append((page_num, marker, content))
+        
+        print(f"    [INFO] Document has {len(pages)} pages, repairing {len(problem_pages)} pages")
+        
+        # Load Gemini API
+        import google.generativeai as genai
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel(MODEL_NAME)
+        
+        # Repair prompt
+        prompt = """You are correcting OCR output for a legal document page. Your task is to:
+1. Fix OCR errors and preserve legal terminology
+2. Format with lines under 65 characters and proper paragraph breaks
+3. Render logo/header text on SINGLE lines (e.g., "MERRY FARNEN & RYAN" not multi-line)
+4. Use standard bullet points (•) not filled circles (⚫)
+5. Return ONLY the corrected page content (no markers, no extra text)
+
+Page content to fix:"""
+        
+        # Repair each problem page
+        for page_num in problem_pages:
+            # Find this page in our pages list
+            page_idx = next((i for i, (pnum, _, _) in enumerate(pages) if pnum == page_num), None)
+            if page_idx is None:
+                print(f"    [WARN] Page {page_num} not found in document")
+                continue
+            
+            marker, content = pages[page_idx][1], pages[page_idx][2]
+            print(f"      Reformatting page {page_num}...")
+            
+            # Call Gemini to reformat just this page
+            response = model.generate_content(
+                prompt + "\n\n" + content.strip(),
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=8192  # Single page shouldn't exceed this
+                )
+            )
+            
+            # Replace the content for this page
+            pages[page_idx] = (page_num, marker, "\n\n" + response.text.strip() + "\n\n")
+            print(f"      [OK] Page {page_num} reformatted")
+        
+        # Reassemble document
+        new_body = ""
+        for page_num, marker, content in pages:
+            new_body += marker + content
+        
+        # Ensure proper spacing
+        if not header.endswith("\n\n"):
+            header = header.rstrip() + "\n\n"
+        
+        final_text = header + new_body.strip() + "\n\n" + footer
+        
+        # Write updated file
+        with open(formatted_file, 'w', encoding='utf-8') as f:
+            f.write(final_text)
+        
+        print(f"    [OK] Repaired {len(problem_pages)} pages in {formatted_file.name}")
+    
+    except Exception as e:
+        print(f"    [ERROR] Targeted repair failed: {e}")
+        # Fallback to full reformat
+        print(f"    [FALLBACK] Running full document reformat")
+        format_single_file(root_dir, base_name)
 
 def reprocess_pdf_enhanced(root_dir, base_name):
     """Reprocess PDF with enhanced OCR settings for low accuracy issues"""
@@ -3002,6 +3126,23 @@ def format_single_file(root_dir, base_name):
         with open(convert_file, 'r', encoding='utf-8') as f:
             full_text = f.read()
         
+        # CRITICAL: Check if v31 file already exists and has GCS URL header
+        # If it does, preserve that header instead of using convert file header
+        existing_header = None
+        if formatted_file.exists():
+            with open(formatted_file, 'r', encoding='utf-8') as f:
+                existing_text = f.read()
+            
+            # Check if it has a GCS URL (Phase 6 updated it)
+            if "https://storage.cloud.google.com/" in existing_text:
+                # Extract existing header with GCS URL
+                existing_body_start = existing_text.find("BEGINNING OF PROCESSED DOCUMENT")
+                if existing_body_start > 0:
+                    body_line = existing_text.find("\n", existing_body_start + len("BEGINNING OF PROCESSED DOCUMENT"))
+                    body_line = existing_text.find("\n", body_line + 1)
+                    existing_header = existing_text[:body_line + 1]
+                    print(f"    [INFO] Preserving existing header with GCS URL")
+        
         # CRITICAL: Extract header, body, footer separately (like v21/Phase 5)
         # Gemini should ONLY see the document body, not the template
         body_start = full_text.find("BEGINNING OF PROCESSED DOCUMENT")
@@ -3016,8 +3157,11 @@ def format_single_file(root_dir, base_name):
         body_start_line = full_text.find("\n", body_start_line + 1)  # Skip the === line
         body_start_content = body_start_line + 1
         
-        # Extract the three parts
-        header = full_text[:body_start_content]
+        # Extract the three parts - use existing header if available
+        if existing_header:
+            header = existing_header
+        else:
+            header = full_text[:body_start_content]
         raw_body = full_text[body_start_content:footer_start].strip()
         footer = full_text[footer_start:]  # Includes the === line before END
         
