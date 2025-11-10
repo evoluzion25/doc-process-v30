@@ -1691,6 +1691,74 @@ def _process_format_file(txt_file, formatted_dir, prompt):
             error=str(e)
         )
 
+# === PHASE 4B: TEXT IMPORT - Import standalone text files ===
+def phase4b_text_import(root_dir):
+    """Import standalone .txt files from 01_doc-original into 04_doc-convert format"""
+    print("\nPHASE 4B: TEXT IMPORT - STANDALONE TEXT FILES")
+    print("-" * 80)
+    
+    # Ensure directory structure exists
+    ensure_directory_structure(root_dir)
+    
+    original_dir = root_dir / "01_doc-original"
+    convert_dir = root_dir / "04_doc-convert"
+    
+    # Find all .txt files in 01_doc-original (exclude PDFs)
+    txt_files = [f for f in original_dir.glob("*.txt") if not f.parent.name.startswith('_')]
+    
+    if not txt_files:
+        print("[SKIP] No standalone text files found in 01_doc-original")
+        return
+    
+    imported_count = 0
+    skipped_count = 0
+    
+    for txt_file in txt_files:
+        # Create base name (remove any existing suffix)
+        base_name = txt_file.stem
+        
+        # Check if already has _c suffix
+        if base_name.endswith('_c'):
+            base_name = base_name[:-2]
+        
+        # Output will be in 04_doc-convert with _c suffix
+        output_path = convert_dir / f"{base_name}_c.txt"
+        
+        if output_path.exists():
+            print(f"[SKIP] Already imported: {txt_file.name}")
+            skipped_count += 1
+            continue
+        
+        try:
+            # Read the original text file
+            with open(txt_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Check if it already has page markers
+            has_markers = '[BEGIN PDF Page' in content
+            
+            if not has_markers:
+                # Add a page 1 marker if none exists
+                formatted_content = "[BEGIN PDF Page 1]\n\n" + content
+            else:
+                # Already has markers, use as-is
+                formatted_content = content
+            
+            # Write to 04_doc-convert with proper format
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write(formatted_content)
+            
+            print(f"[OK] Imported: {txt_file.name} → {output_path.name}")
+            imported_count += 1
+            
+        except Exception as e:
+            print(f"[FAIL] {txt_file.name}: {e}")
+    
+    if imported_count > 0:
+        print(f"\n[OK] Imported {imported_count} standalone text file(s)")
+    if skipped_count > 0:
+        print(f"[INFO] Skipped {skipped_count} already imported file(s)")
+
 # === PHASE 5: FORMAT - AI Text Cleaning ===
 def phase5_format(root_dir):
     """Clean and format text files using Gemini (exact v21 prompt)"""
@@ -3681,7 +3749,7 @@ def print_phase_overview():
 def main():
     parser = argparse.ArgumentParser(description='Document Processing Pipeline v31')
     parser.add_argument('--dir', type=str, help='Target directory to process')
-    parser.add_argument('--phase', nargs='+', choices=['directory', 'rename', 'clean', 'convert', 'format', 'gcs_upload', 'verify', 'repair', 'all'],
+    parser.add_argument('--phase', nargs='+', choices=['directory', 'rename', 'clean', 'convert', 'text_import', 'format', 'gcs_upload', 'verify', 'repair', 'all'],
                        default=None, help='Phases to run (omit for interactive mode)')
     parser.add_argument('--no-verify', action='store_true', help='Skip phase verification prompts')
     parser.add_argument('--force-reupload', action='store_true', help='Force re-upload to GCS and update all headers (use after directory rename)')
@@ -3731,6 +3799,7 @@ def main():
         'rename': phase2_rename,
         'clean': phase3_clean,
         'convert': phase4_convert,
+        'text_import': phase4b_text_import,
         'format': phase5_format,
         'gcs_upload': phase6_gcs_upload,
         'verify': phase7_verify,
