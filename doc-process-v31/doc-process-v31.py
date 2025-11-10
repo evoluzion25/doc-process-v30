@@ -122,103 +122,6 @@ report_data = {
     'clean': [], 'convert': [], 'format': [], 'verify': []
 }
 
-# === BACKUP SYSTEM ===
-def create_backup(file_path: Path, root_dir: Path, operation: str = "modify"):
-    """
-    Create timestamped backup before any file modification or deletion.
-    All backups stored in _backups/<YYYYMMDD-HHMMSS>/ with metadata.
-    
-    Args:
-        file_path: Path to file being modified/deleted
-        root_dir: Project root directory
-        operation: Type of operation (modify, delete, move, rename)
-    
-    Returns:
-        Path to backup file, or None if backup failed
-    """
-    try:
-        if not file_path.exists():
-            return None
-        
-        # Create timestamped backup directory
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup_dir = root_dir / "_backups" / timestamp
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Preserve directory structure in backup
-        rel_path = file_path.relative_to(root_dir)
-        backup_path = backup_dir / rel_path
-        backup_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Copy file to backup
-        shutil.copy2(str(file_path), str(backup_path))
-        
-        # Create metadata file
-        metadata_path = backup_dir / "BACKUP_METADATA.txt"
-        with open(metadata_path, 'a', encoding='utf-8') as f:
-            f.write(f"\n{'='*80}\n")
-            f.write(f"Timestamp: {timestamp}\n")
-            f.write(f"Operation: {operation}\n")
-            f.write(f"Original Path: {file_path}\n")
-            f.write(f"Backup Path: {backup_path}\n")
-            f.write(f"File Size: {file_path.stat().st_size} bytes\n")
-            f.write(f"{'='*80}\n")
-        
-        return backup_path
-        
-    except Exception as e:
-        print(f"[WARN] Backup failed for {file_path.name}: {e}")
-        return None
-
-def create_session_backup(root_dir: Path):
-    """
-    Create complete snapshot backup before starting any phase.
-    Backup includes all pipeline directories (01-05).
-    
-    Returns:
-        Path to session backup directory
-    """
-    try:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        session_backup_dir = root_dir / "_backups" / f"SESSION_{timestamp}"
-        
-        # Directories to backup
-        dirs_to_backup = [
-            "01_doc-original", "02_doc-renamed", "03_doc-clean",
-            "04_doc-convert", "05_doc-format"
-        ]
-        
-        backup_count = 0
-        for dir_name in dirs_to_backup:
-            source_dir = root_dir / dir_name
-            if source_dir.exists():
-                target_dir = session_backup_dir / dir_name
-                shutil.copytree(str(source_dir), str(target_dir), dirs_exist_ok=True)
-                backup_count += len(list(target_dir.rglob("*")))
-        
-        # Create session metadata
-        metadata_path = session_backup_dir / "SESSION_BACKUP_INFO.txt"
-        with open(metadata_path, 'w', encoding='utf-8') as f:
-            f.write(f"SESSION BACKUP\n")
-            f.write(f"{'='*80}\n")
-            f.write(f"Timestamp: {timestamp}\n")
-            f.write(f"Root Directory: {root_dir}\n")
-            f.write(f"Files Backed Up: {backup_count}\n")
-            f.write(f"Directories Backed Up: {', '.join(dirs_to_backup)}\n")
-            f.write(f"{'='*80}\n")
-            f.write(f"\nTo restore this session:\n")
-            f.write(f"1. Stop any running pipeline processes\n")
-            f.write(f"2. Copy contents of each directory back to original location\n")
-            f.write(f"3. Verify file counts match\n")
-        
-        print(f"[BACKUP] Session backup created: {session_backup_dir.name}")
-        print(f"[BACKUP] {backup_count} files backed up")
-        return session_backup_dir
-        
-    except Exception as e:
-        print(f"[WARN] Session backup failed: {e}")
-        return None
-
 # === TIMEOUT INPUT HELPER ===
 def input_with_timeout(prompt, timeout=30, default='1'):
     """Get user input with timeout. Returns default if timeout expires."""
@@ -440,12 +343,6 @@ def phase1_directory(root_dir):
         report_data['directory']['status'] = 'SKIPPED'
         # Continue to next phase - may have files already in 01_doc-original
         return
-    
-    # CREATE BACKUP before any file operations
-    print(f"[BACKUP] Creating backup of {len(pdf_files)} files before moving...")
-    for pdf in pdf_files:
-        create_backup(pdf, root_dir, operation="move")
-    print(f"[BACKUP] Backup complete")
     
     # Sort by file size (smallest to largest) for better progress visibility
     pdf_files.sort(key=lambda x: x.stat().st_size)

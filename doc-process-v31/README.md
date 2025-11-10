@@ -8,34 +8,11 @@ Complete 7-phase pipeline for legal document processing with parallel execution,
 
 ## What's New in v31
 
-### Automatic Backup System (November 9, 2025)
-- **Complete protection**: All file operations are backed up before execution
-- **Timestamped snapshots**: Every backup stored in `_backups/<YYYYMMDD-HHMMSS>/`
-- **Preserve structure**: Maintains original directory hierarchy in backups
-- **Metadata tracking**: Each backup includes operation type, timestamp, file paths, sizes
-- **Easy restore**: Use `restore_backup.py` utility to restore any backup
-- **Session backups**: Full pipeline directory snapshots before starting phases
-
-**Backup Features**:
-- Phase 1 (Directory): Backs up all PDFs before moving to `01_doc-original/`
-- Prevents data loss from path issues, special characters, or Windows limitations
-- Backups preserved indefinitely - never auto-deleted
-- Restore utility supports dry-run mode for safe testing
-
-**Restore Usage**:
-```bash
-# List all available backups
-python restore_backup.py --dir "G:\path\to\project"
-
-# Restore latest backup (dry-run)
-python restore_backup.py --dir "G:\path\to\project" --latest
-
-# Execute restore (actually copy files)
-python restore_backup.py --dir "G:\path\to\project" --latest --execute
-
-# Restore specific backup by timestamp
-python restore_backup.py --dir "G:\path\to\project" --backup 20251109-153045 --execute
-```
+### Backup System Removed (November 10, 2025)
+- **Simplified workflow**: Removed automatic backup system to improve performance
+- **Direct processing**: Files now processed directly without creating timestamped backups
+- **Storage optimization**: Reduced storage requirements by eliminating backup directories
+- **User responsibility**: Users should create manual backups before processing if needed
 
 ### Phase 6-7 Suffix Flexibility (November 9, 2025)
 - **Universal suffix support**: Phase 6 (GCS Upload) and Phase 7 (Verify) now handle PDFs and text files with ANY suffix
