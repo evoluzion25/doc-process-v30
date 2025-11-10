@@ -1739,10 +1739,22 @@ def phase4b_text_import(root_dir):
             
             if not has_markers:
                 # Add a page 1 marker if none exists
-                formatted_content = "[BEGIN PDF Page 1]\n\n" + content
+                body_content = "[BEGIN PDF Page 1]\n\n" + content
             else:
                 # Already has markers, use as-is
-                formatted_content = content
+                body_content = content
+            
+            # Wrap in Phase 4 template structure for compatibility with Phase 5
+            formatted_content = f"""=====================================================================
+BEGINNING OF PROCESSED DOCUMENT
+=====================================================================
+
+{body_content.strip()}
+
+=====================================================================
+END OF PROCESSED DOCUMENT
+=====================================================================
+"""
             
             # Write to 04_doc-convert with proper format
             with open(output_path, 'w', encoding='utf-8') as f:
