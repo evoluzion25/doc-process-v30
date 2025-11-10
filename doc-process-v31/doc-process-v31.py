@@ -2267,7 +2267,16 @@ def phase7_verify(root_dir, auto_repair=False):
     clean_dir = root_dir / "03_doc-clean"
     formatted_dir = root_dir / "05_doc-format"
     
-    txt_files = list(formatted_dir.glob("*_v31.txt"))
+    # Find all formatted text files with any version suffix (_v31, _v22, _gp, etc.)
+    all_txt_files = list(formatted_dir.glob("*.txt"))
+    
+    # Filter for files that end with version suffixes
+    txt_files = []
+    for txt_file in all_txt_files:
+        name = txt_file.stem
+        # Check if ends with known format suffixes
+        if name.endswith(('_v31', '_v22', '_gp', '_v30', '_v29')):
+            txt_files.append(txt_file)
     
     if not txt_files:
         print("[SKIP] No formatted files to verify")
@@ -2561,8 +2570,8 @@ def phase7_verify(root_dir, auto_repair=False):
     
     # Generate verification report
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    report_path = root_dir / f"VERIFICATION_REPORT_v31_{timestamp}.txt"
-    manifest_csv_path = root_dir / f"PDF_MANIFEST_v31_{timestamp}.csv"
+    report_path = root_dir / f"VERIFICATION_REPORT_{timestamp}.txt"
+    manifest_csv_path = root_dir / f"PDF_MANIFEST_{timestamp}.csv"
     
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write("="*80 + "\n")
