@@ -2387,8 +2387,14 @@ def phase7_verify(root_dir, auto_repair=False):
             return False
     
     for txt_file in txt_files:
-        # Find corresponding PDF
-        base_name = txt_file.stem[:-4]  # Remove _v31
+        # Find corresponding PDF - remove the format suffix to get base name
+        base_name = txt_file.stem
+        # Remove known format suffixes
+        for suffix in ['_v31', '_v22', '_gp', '_v30', '_v29']:
+            if base_name.endswith(suffix):
+                base_name = base_name[:-len(suffix)]
+                break
+        
         pdf_file = clean_dir / f"{base_name}_o.pdf"
         
         if not pdf_file.exists():
